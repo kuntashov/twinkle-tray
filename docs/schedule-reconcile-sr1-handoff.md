@@ -1,0 +1,167 @@
+# SR-1 implementation handoff
+
+Source: user authorization; no BPM ticket. Branch: `schedule-reconcile/implementation`.
+Base: `f4b36e12e2dbedd415a588b9baa2b8c65cf01f30`.
+Contract: orchestrator's `.scratch/schedule-reconcile/spec.md`, `tickets.md` and
+`docs/autonomous-decisions/schedule-reconcile.md` in the integration worktree.
+This is an author handoff for independent standards/spec review, not approval.
+
+## Delivered behavior
+
+- One local main-process recovery owner selects current schedule or permitted
+  restore targets after refresh/read waits. Completed inventory evidence is
+  separate from a fulfilled refresh returning cached inventory.
+- Acceptance, temporary pending displays and manual interval overrides are
+  separate. Full local date, selected event and relevant settings identify the
+  interval. A manual request before first acceptance protects only that display;
+  ordinary animated ticks retain their behavior. Overrides are never persisted.
+- Intent follows the existing transport, worker-ready await, throttle, deferred
+  brightness/linked features, extended-minimum gamma queue and transition
+  callbacks. Actual IPC rechecks interval and guards even without another trigger.
+  Standalone volume/VCP work carries no brightness cancellation token.
+- Existing lifecycle delays lead to one bounded readiness attempt (30 seconds).
+  Readiness listeners, owned queued submissions and dedicated reads are released
+  on cancellation. An already started valid smooth transition has an independent
+  lifetime and retains its configured speed. Equivalent requests do not restart it.
+- Display callbacks coalesce before starting recovery. Idle restore uses a
+  same-interval pre-idle snapshot or the current accepted/manual target, so an old
+  snapshot cannot overwrite a newer event. Active brightness profiles block
+  automatic schedule and generic restore writes.
+- Existing second-instance `--UseTime` explicitly expires the current override;
+  normal lifecycle recovery preserves it. Cold startup remains controlled by
+  `brightnessAtStartup` and `checkTimeAtStartup`; startup suppression does not
+  prevent a later lifecycle request, explicit request or new event.
+
+Production changes are confined to `src/electron.js` and README's existing CLI
+documentation. There is no new runtime helper and no packaging file-list change.
+The existing volume tests use the same dependency-free production-function
+extractor; their six behavioral assertions are unchanged.
+
+## Executed checks
+
+Node on the source-only host: v24.15.0. No dependency installation, application,
+CLI process, native worker or native test was run here.
+
+| Command | Final result |
+|---|---|
+| `node --test tests/schedule-reconcile.test.cjs tests/volume-values.test.cjs` | **48/48 PASS**, exit 0; ordinary isolated runner, narrow approved execution |
+| `node tests/schedule-reconcile.test.cjs` | **42/42 PASS**, exit 0; complete direct module load |
+| `node tests/volume-values.test.cjs` | **6/6 PASS**, exit 0; complete direct module load |
+| `node tests/schedule-negative-control.cjs --patched` | **1/1 PASS**, exit 0 |
+| `node --check src/electron.js` | exit 0 |
+| `git diff --check` | exit 0 |
+
+The sandbox initially denied the ordinary test runner's child spawn with `EPERM`;
+the exact two-file command above then passed under narrow approval. Early focused
+`--test-isolation=none --test-name-pattern=...` runs are development evidence only;
+the final gate includes both complete direct loads and the ordinary runner. The
+original volume test's ambient Babel parser dependency was removed from extraction,
+not from its assertions. The historical analysis 30/30 observations are not counted.
+
+## Reproducible negative control and RED/GREEN evidence
+
+`tests/schedule-negative-control.cjs` uses the **same harness, actual production
+functions and 00:00/06:00/20:00/22:00 fixture** on either source. It executes the
+real scheduler, refresh coordinator/commit, brightness sender and transport. Only
+worker results/IPC, time and OS/UI/persistence effects are controlled.
+
+Run against an unmodified pinned source file:
+
+```powershell
+node tests/schedule-negative-control.cjs <path-to-pinned-electron.js>
+node tests/schedule-negative-control.cjs --patched
+```
+
+With Git child-process access, omitting the first argument reads
+`git show f4b36e12e2dbedd415a588b9baa2b8c65cf01f30:src/electron.js` directly. The host
+sandbox denied Node's `spawnSync git`, so the initial host negative run used an explicit
+file containing those exact Git blob bytes. The final default command also
+reproduced the assertion under narrow approval. This environmental failure is not the
+negative-control result.
+
+- Original loaded SHA-256:
+  `707d90e2f76ebb08d3ab477571dfa791726399de239511d0d610addc3aab7d4b`.
+  **1 assertion failure, exit 1**: expected `A55, B45`, actual `A55`. No missing
+  new-helper/API exception occurs.
+- Patched `src/electron.js` SHA-256:
+  `d07c7c5324529ee85670b757cea74f620dbc28a0d2e033f3f6ee94c014b5b699`.
+  **1 PASS, exit 0**: exactly `A55, B45`, with no duplicate A write.
+
+Implementation proceeded in focused vertical RED/GREEN slices. Observed REDs
+before the corresponding production fix included:
+
+| Regression | Observed RED | GREEN evidence in final suite |
+|---|---|---|
+| Partial/empty/newly-ready inventory | missing B45 / no retry | partial, empty and inventory-event tests |
+| Manual before acceptance | manual 70 followed by old schedule 55 | manual-before-acceptance and temporary-manual tests |
+| Actual queue boundary | old 55 instead of current 45 | queued sender, per-peer await and `sendNow` wait tests |
+| Deferred feature work | obsolete B20 after B70; obsolete linked effects | deferred brightness/linked test |
+| Shared restore | saved 75 instead of manual 70/current schedule 55 | same-interval and late-known tests |
+| Smooth | instant write; wake flag cancelled recovery; pending queue retained | long smooth, real resume and callback cancellation tests |
+| Animated read | no dedicated read; cancellation left one read listener | LERP read wait and actual read cleanup tests |
+| UseTime/startup | manual override not expired; startup-off wrote 55 | actual handler and startup-block tests |
+| Idle/lifecycle | restored zero/old 80; duplicate display writes | idle snapshot and overlapping actual callbacks tests |
+| Deadline/guards | second readiness window; owner remained pending after profile | real resume deadline and dynamic guard tests |
+| Gamma / interval-bound manual | expired ramp; old queued manual 70 | gamma boundary and queued manual expiry tests |
+
+Two unchanged Unicode comments were restored byte-for-byte from the base after an
+editing-tool encoding error expanded them. The final file is UTF-8, 218 KB; no
+executable behavior was changed by that repair. Final checks above follow the repair.
+
+## Acceptance coverage
+
+All test names below refer to `tests/schedule-reconcile.test.cjs`; shortened
+distinctive phrases make the matching tests easy to find.
+
+| AC | Source-level evidence |
+|---|---|
+| AC1 | `partial inventory`, `overlapping actual unlock` use the actual four-event per-display fixture |
+| AC2 | `real paused, rate-limited and failed refresh`, `failed software send`, `skipped refresh`, `empty current inventory` |
+| AC3 | `partial inventory`, `newly-ready inventory event`, `temporarily unavailable manually corrected display`; only current inventory is iterated |
+| AC4 | `overlapping actual unlock` crosses 22:00; `animated brightness is recalculated` crosses a read wait |
+| AC5 | `actual refresh generations`, `read continuations completed in reverse order`, `actual queued sender`, `sendNow rechecks`, `awaited peer submission` |
+| AC6 | `obsolete deferred brightness and linked effects`, `manual throttle`, `extended-minimum gamma`; existing six volume tests |
+| AC7 | actual resume/unlock/metrics/hardware/idle callbacks; `late saved known brightness`, `delayed idle return` |
+| AC8 | `same-interval known restoration`, `full dates`, case-insensitive `UseTime`; actual SDR/gamma primary conversion |
+| AC9 | `manual brightness before first acceptance`, `temporarily unavailable manually corrected display`, `direct manual brightness ... off` |
+| AC10 | `profile changes`, `pause and idle guards`, `current visibility settings`; real read and send continuations |
+| AC11 | `valid smooth transition` lasts 80 seconds with a pending peer and readiness expiry; equivalent recovery, callback cancellation, idle smooth peers and real resume tests |
+| AC12 | per-display delayed LERP, actual correlated read with linked overnight interpolation, partial readable IDs, failure and superseded read |
+| AC13 | `full dates, backwards time`, `before the first event today`; date/month boundaries and no previous-day carry |
+| AC14 | actual read cleanup, readiness timeout/queue cleanup, worker-exit reverse completions, later normal retry; no permanent retry timer |
+| AC15 software | actual `handleCommandLine`, actual startup settings block/background scheduling, later lock/unlock after startup-off; README |
+
+## Runtime handoff and limits
+
+The harness extracts declarations without rewriting their algorithms. Its seams
+include actual `refreshMonitors`, inventory commit, lifecycle handlers, queues,
+deferred feature/linked flush, gamma throttle, `updateBrightness`, `sendNow`,
+transitions and the real dedicated read job. Worker/native calls, app bootstrap,
+UI and persistence effects remain controlled. The normal shared monitor inventory
+operation retains its existing worker timeout/serialization; cancelling brightness
+readiness does not recall an already issued native inventory operation.
+
+SR-2 must separately establish packaged startup, actual second-process delivery,
+Windows build/packaging and session/power events on the dedicated VM. This author
+does not mark those runtime gates passed. Physical DDC/CI and WMI remain deferred;
+software transport acceptance is not native acknowledgement or physical success.
+
+For VM observability, existing `settings.json` field `logging: true` enables the
+normal session log under `<configFilesDir>/logs/session-*.log`. Non-portable config
+uses Electron `app.getPath("userData")`; portable config uses `../../config/`
+relative to `src`. No new logging flag or telemetry is added. Useful main log markers:
+
+- `Time adjustment request: reconcile { explicit: true, time: ..., instant: false }`
+  identifies the running-instance UseTime delivery into the owner.
+- `Time adjustment request: guarded { explicit: true }` / `no current event`
+  identify delivery blocked by policy or event selection.
+- `Brightness reconciliation: software target accepted { kind, target }` means
+  eligible software submission/completed smooth target, not physical acknowledgement.
+- `waiting for usable monitors` then `finished { cancelled: true }` distinguishes
+  bounded readiness expiry/worker stop from accepted brightness. The surrounding
+  existing worker logs identify exit/failure. A no-compatible-display VM must be
+  reported as such, without inventing a successful hardware write.
+
+Independent reviewers should compare this source commit against the pinned base
+on both standards and specification axes. Integration and acceptance remain with
+the orchestrator; no push, PR, merge or self-approval was performed by this author.

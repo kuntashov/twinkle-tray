@@ -104,6 +104,7 @@ For example: `"%LocalAppData%\Programs\twinkle-tray\Twinkle Tray.exe" --MonitorN
 - `--All` Flag to select all monitors.
 - `--Set` Set brightness percentage. *Example: `--Set=95`*
 - `--Offset` Adjust brightness percentage. *Example: `--Offset=-20`*
+- `--UseTime` Apply the current time adjustment to an already running instance; no monitor argument is needed. Arguments are case-insensitive. Pause, active brightness profiles and idle guards still apply. A cold launch follows the existing startup brightness and "check time at startup" settings.
 - `--VCP` Send a specific DDC/CI VCP code and value instead of brightness. The first part is the VCP code (decimal or hexadecimal), and the second is the value. *Example: `--VCP="0xD6:5"`* *(available in v1.14.4+)*
 - `--Overlay` Flag to show new brightness levels in the overlay *Example: `--Overlay`*
 - `--Panel` Flag to show new brightness levels in the panel *Example: `--Panel`*

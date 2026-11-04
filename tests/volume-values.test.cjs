@@ -1,6 +1,5 @@
 const test = require('node:test')
 const assert = require('node:assert/strict')
-const fs = require('node:fs')
 const vm = require('node:vm')
 const path = require('node:path')
 const root = path.resolve(__dirname, '..')
@@ -43,10 +42,9 @@ test('raw values round-trip through percentage and range limits', () => {
 })
 
 // Execute the actual main-process functions with only OS/IPC effects stubbed.
-const source = fs.readFileSync(path.join(root, 'src/electron.js'), 'utf8')
-const ast = require(path.join(root, 'node_modules/@babel/parser')).parse(source, { sourceType: 'script', allowReturnOutsideFunction: true })
-const names = ['applyLinkedFeatures', 'updateBrightness', 'normalizeBrightness']
-const functions = ast.program.body.filter(n => n.type === 'FunctionDeclaration' && names.includes(n.id.name))
+const { extractFunction } = require('./production-functions.cjs')
+const names = ['applyLinkedFeatures', 'updateBrightness', 'normalizeBrightness',
+    'brightnessIntentIsCurrent', 'brightnessSubmissionIsCurrent']
 function createContext(featureSettings) {
     const messages = []
     const monitor = { id: 'DISPLAY#TEST#ONE', hwid: ['DISPLAY', 'TEST', 'ONE'], key: 'ONE', type: 'ddcci', min: 0, max: 100, features: { '0x62': [0, 65535] } }
@@ -60,7 +58,7 @@ function createContext(featureSettings) {
         console: { log() {} }, debug: { error: (...args) => { throw new Error(args.join(' ')) } }
     }
     vm.createContext(context)
-    vm.runInContext(functions.map(n => source.slice(n.start, n.end)).join('\n'), context)
+    vm.runInContext(names.map(name => extractFunction(name)).join('\n'), context)
     context.updateBrightnessThrottle = (id, value, cap, send, vcp) => context.updateBrightness(id, value, cap, vcp)
     return { context, monitor, messages }
 }

@@ -208,7 +208,7 @@ async function flushQueuedMonitorCommands(beforeRefresh = false) {
         command.resolve()
         continue
       }
-      const sent = await monitorsThread.sendNow(command.data)
+      const sent = await monitorsThread.sendNow(command.data, command.intent)
       command.resolve(sent !== false)
     }
   } catch (error) {
@@ -235,16 +235,19 @@ function queuedCommandTargetsCurrentMonitor(data) {
 }
 
 let monitorsThread = {
-  sendNow: async function (data) {
+  sendNow: async function (data, intent) {
     try {
+      if (!brightnessSubmissionIsCurrent(intent)) return false
       if (!(monitorsThreadReal?.connected && monitorsThreadReal?.exitCode === null)) {
         startMonitorThread()
         while(!monitorsThreadReady) {
+          if (!brightnessSubmissionIsCurrent(intent)) return false
           await Utils.wait(50)
         }
       }
       if(!monitorsThreadReady) throw("Thread not ready!");
       if(!(monitorsThreadReal?.connected && monitorsThreadReal?.exitCode === null)) throw("Thread not available!");
+      if (!brightnessSubmissionIsCurrent(intent)) return false
       monitorsThreadReal.send(data)
       return true
     } catch (e) {
@@ -252,13 +255,14 @@ let monitorsThread = {
       return false
     }
   },
-  send: function (data) {
+  send: function (data, intent) {
+    if (!brightnessSubmissionIsCurrent(intent)) return Promise.resolve(false)
     if (monitorCommandsThatMutateWorkerState.has(data.type) && monitorWorkerHasExclusiveWork()) {
       return new Promise((resolve, reject) => {
-        queuedMonitorCommands.push({ data, resolve, reject, generation: monitorRefreshGeneration })
+        queuedMonitorCommands.push({ data, intent, resolve, reject, generation: monitorRefreshGeneration })
       })
     }
-    return this.sendNow(data)
+    return this.sendNow(data, intent)
   },
   once: function (message, callback) {
     try {
@@ -1265,7 +1269,7 @@ function processSettings(newSettings = {}, sendUpdate = true) {
     }
 
     if (newSettings.adjustmentTimes !== undefined) {
-      lastTimeEvent = false
+      startupScheduleIdentity = false
       restartBackgroundUpdate()
       rebuildTray = true
     }
@@ -1549,13 +1553,13 @@ function releaseExtendedMinimumRamp(monitor, hardwareLevel) {
 
 // Set the ramp and track the level. Writes are coalesced, so transitions
 // can't outrun SetDeviceGammaRamp.
-function setTrackedGammaLevel(monitor, level) {
+function setTrackedGammaLevel(monitor, level, intent) {
   const gammaLevel = Math.round(minMax(level, GAMMA_BRIGHTNESS_MIN, 100))
   if (monitor.gammaBrightness === gammaLevel) return false
 
   monitor.gammaBrightness = gammaLevel
-  setGammaBrightnessThrottle(monitor.id, gammaLevel)
-  return true
+  const submission = setGammaBrightnessThrottle(monitor.id, gammaLevel, intent)
+  return intent ? submission : true
 }
 
 // Does this display's brightness depend on its gamma ramp?
@@ -1580,7 +1584,7 @@ function restoreGammaAfterReset(monitor, previous) {
     monitor.brightnessRaw = previous.gammaBrightness
   }
 
-  setGammaBrightnessThrottle(monitor.id, previous.gammaBrightness)
+  setGammaBrightnessThrottle(monitor.id, previous.gammaBrightness, brightnessIntents.get(monitor.id))
   return true
 }
 
@@ -1592,7 +1596,7 @@ function reapplyGammaRamps() {
     if (!(monitor?.gammaBrightness >= 0) || monitor.gammaBrightness >= 100) continue
     if (!usesGammaRamp(monitor)) continue
 
-    setGammaBrightnessThrottle(monitor.id, monitor.gammaBrightness)
+    setGammaBrightnessThrottle(monitor.id, monitor.gammaBrightness, brightnessIntents.get(monitor.id))
   }
 }
 
@@ -1747,16 +1751,12 @@ function getKnownDisplays(useCurrentMonitors) {
 }
 
 // Look up all known displays and re-apply last brightness
-function setKnownBrightness(useCurrentMonitors = false, useTransition = false, transitionSpeed = 1) {
-
-  console.log(`\x1b[36mSetting brightness for known displays\x1b[0m`, useCurrentMonitors, useTransition, transitionSpeed)
-
-  const known = getKnownDisplays(useCurrentMonitors)
-  applyProfile(known, useTransition, transitionSpeed)
-
-  // Brightness alone won't restore a ramp that an event cleared, since the
-  // tracked level still matches what we last set.
-  reapplyGammaRamps()
+function setKnownBrightness(useCurrentMonitors = false, useTransition = false, transitionSpeed = 1, allowSchedule = true) {
+  if (settings.disableAutoApply || currentProfile?.setBrightness) return false
+  return reconcileBrightness(!useTransition, {
+    restore: true, known: getKnownDisplays(useCurrentMonitors),
+    speed: transitionSpeed, allowSchedule, bypassRateLimit: true
+  })
 }
 
 function applyProfile(profile = {}, useTransition = false, transitionSpeed = 1, skipBadDisplays = false) {
@@ -1788,7 +1788,7 @@ function applyProfile(profile = {}, useTransition = false, transitionSpeed = 1, 
           if(settings.sdrAsMainSliderDisplays?.[monitor.key] && monitor.hdr === "active") {
             monitor.brightness = monitor.sdrLevel
           }
-          updateBrightness(monitor.id, monitor.brightness)
+          updateBrightness(monitor.id, monitor.brightness, true, "brightness", true, newBrightnessIntent(monitor.id, "profile", monitor.brightness))
         }
       } catch (e) { console.log("Couldn't set brightness for known display!") }
     }
@@ -2567,7 +2567,7 @@ refreshMonitorsJob = async (fullRefresh = false, generation = 0) => {
   })
 }
 
-readKnownBrightnessJob = async (requestId) => {
+readKnownBrightnessJob = async (requestId, signal) => {
   return await new Promise((resolve, reject) => {
     let cleanup = () => { }
     try {
@@ -2584,6 +2584,10 @@ readKnownBrightnessJob = async (requestId) => {
         cleanup()
         reject(new Error("Monitor worker stopped during brightness read."))
       }
+      const requestAborted = () => {
+        cleanup()
+        reject(new Error("Brightness read was cancelled."))
+      }
       const timeout = setTimeout(() => {
         cleanup()
         reject(new Error("Monitor worker timed out reading current brightness."))
@@ -2593,10 +2597,13 @@ readKnownBrightnessJob = async (requestId) => {
         monitorsEventEmitter.removeListener("knownBrightness", listener)
         worker.removeListener("exit", workerStopped)
         worker.removeListener("error", workerStopped)
+        signal?.removeEventListener("abort", requestAborted)
       }
       monitorsEventEmitter.on("knownBrightness", listener)
       worker.once("exit", workerStopped)
       worker.once("error", workerStopped)
+      signal?.addEventListener("abort", requestAborted, { once: true })
+      if (signal?.aborted) { requestAborted(); return }
       worker.send({ type: "readKnownBrightness", requestId })
     } catch (e) {
       cleanup()
@@ -2725,7 +2732,7 @@ function hasEnabledLinkedFeatures() {
   }
 }
 
-function deferFeatureUpdate(monitor, level, useCap, vcpValue, clearTransition = true) {
+function deferFeatureUpdate(monitor, level, useCap, vcpValue, clearTransition = true, intent) {
   if (!monitor?.id) return false
   deferredFeatureUpdates.set(`${monitor.id}:${vcpValue}`, {
     generation: monitorRefreshGeneration,
@@ -2733,18 +2740,20 @@ function deferFeatureUpdate(monitor, level, useCap, vcpValue, clearTransition = 
     level,
     useCap,
     vcpValue,
-    clearTransition
+    clearTransition,
+    intent
   })
   return true
 }
 
-function deferLinkedFeatureUpdate(monitor, level, useCap) {
+function deferLinkedFeatureUpdate(monitor, level, useCap, intent) {
   if (!monitor?.id) return false
   deferredLinkedFeatureUpdates.set(monitor.id, {
     generation: monitorRefreshGeneration,
     monitorId: monitor.id,
     level,
-    useCap
+    useCap,
+    intent
   })
   return true
 }
@@ -2758,18 +2767,18 @@ function flushDeferredFeatureUpdates() {
   deferredLinkedFeatureUpdates.clear()
 
   for (const update of featureUpdates) {
-    if (update.generation !== monitorRefreshGeneration) continue
+    if (update.generation !== monitorRefreshGeneration || !brightnessSubmissionIsCurrent(update.intent)) continue
     const monitor = Object.values(monitors).find(item => item?.id === update.monitorId)
     if (monitor) {
-      updateBrightness(update.monitorId, update.level, update.useCap, update.vcpValue, update.clearTransition)
+      updateBrightness(update.monitorId, update.level, update.useCap, update.vcpValue, update.clearTransition, update.intent)
     }
   }
 
   for (const update of linkedUpdates) {
-    if (update.generation !== monitorRefreshGeneration) continue
+    if (update.generation !== monitorRefreshGeneration || !brightnessSubmissionIsCurrent(update.intent)) continue
     const monitor = Object.values(monitors).find(item => item?.id === update.monitorId)
     if (monitor) {
-      applyLinkedFeatures(monitor, update.level, update.useCap)
+      applyLinkedFeatures(monitor, update.level, update.useCap, update.intent)
     }
   }
 }
@@ -2827,6 +2836,8 @@ function commitRefreshedMonitors(newMonitors, oldMonitors = {}) {
 
   monitors = newMonitors
   lastCompletedRefresh = Date.now()
+  completedMonitorInventory++
+  monitorsEventEmitter.emit("brightness-inventory")
   lightSensor.setMonitors(monitors)
   flushDeferredFeatureUpdates()
 
@@ -3007,7 +3018,10 @@ async function refreshMonitors(fullRefresh = false, bypassRateLimit = false, byp
 let pausedMonitorUpdates = false
 function pauseMonitorUpdates() {
   if (pausedMonitorUpdates) clearTimeout(pausedMonitorUpdates);
-  pausedMonitorUpdates = setTimeout(() => pausedMonitorUpdates = false, settings.updateInterval * 2)
+  pausedMonitorUpdates = setTimeout(() => {
+    pausedMonitorUpdates = false
+    monitorsEventEmitter.emit("brightness-unpaused")
+  }, settings.updateInterval * 2)
 }
 
 
@@ -3024,22 +3038,25 @@ function pauseMonitorUpdates() {
 // bypasses the tracked brightness that normal updates maintain.
 let gammaBrightnessTimeout = false
 let gammaBrightnessQueue = {}
-function setGammaBrightnessThrottle(id, level) {
-  gammaBrightnessQueue[id] = level
-  if (gammaBrightnessTimeout) return false
-  flushGammaBrightness()
-  return true
+function setGammaBrightnessThrottle(id, level, intent) {
+  if (!brightnessSubmissionIsCurrent(intent)) return false
+  gammaBrightnessQueue[id]?.resolve?.(false)
+  let resolve
+  const submission = new Promise(done => { resolve = done })
+  gammaBrightnessQueue[id] = { level, intent, resolve }
+  if (!gammaBrightnessTimeout) flushGammaBrightness()
+  return intent ? submission : true
 }
 
 function flushGammaBrightness() {
+  if (gammaBrightnessTimeout) clearTimeout(gammaBrightnessTimeout)
   const queue = gammaBrightnessQueue
   gammaBrightnessQueue = {}
   for (const id in queue) {
-    monitorsThread.send({
-      type: "gamma",
-      brightness: queue[id],
-      id
-    })
+    const update = queue[id]
+    Promise.resolve(monitorsThread.send({
+      type: "gamma", brightness: update.level, id
+    }, update.intent)).then(update.resolve, () => update.resolve(false))
   }
   gammaBrightnessTimeout = setTimeout(() => {
     gammaBrightnessTimeout = false
@@ -3050,7 +3067,12 @@ function flushGammaBrightness() {
 // Throttle state per monitor + VCP target: when it was last written, the
 // latest update waiting to be written, and the timer that will write it.
 const brightnessThrottleTargets = new Map()
-function updateBrightnessThrottle(id, level, useCap = true, sendUpdate = true, vcp = "brightness") {
+function updateBrightnessThrottle(id, level, useCap = true, sendUpdate = true, vcp = "brightness", intent) {
+  if (!brightnessSubmissionIsCurrent(intent)) return false
+  if (!intent && (vcp === "brightness" || vcp === "sdr")) {
+    const monitor = Object.values(monitors).find(m => m?.id === id || m?.id?.indexOf(id) === 0)
+    if (monitor) intent = newBrightnessIntent(monitor.id, "manual", level)
+  }
   // A monitor can receive its brightness update and several linked feature
   // updates at once. Keep each VCP target separate so one linked feature does
   // not replace another feature (or the brightness update) in the queue.
@@ -3070,13 +3092,13 @@ function updateBrightnessThrottle(id, level, useCap = true, sendUpdate = true, v
   const now = Date.now()
   if (!state.timeout && now >= state.lastTime + settings.updateInterval) {
     state.lastTime = now
-    updateBrightness(id, level, useCap, vcp)
+    updateBrightness(id, level, useCap, vcp, true, intent)
     if (sendUpdate) sendToAllWindows('monitors-updated', monitors);
     return true
   }
 
   // Keep only the latest level, but still notify windows if any skipped update asked to
-  state.pending = { id, level, useCap, vcp, sendUpdate: (sendUpdate || state.pending?.sendUpdate) }
+  state.pending = { id, level, useCap, vcp, intent, sendUpdate: (sendUpdate || state.pending?.sendUpdate) }
   if (!state.timeout) {
     // Each target has its own timer, so it's never written sooner than
     // updateInterval after its own last write
@@ -3089,10 +3111,10 @@ function flushBrightnessThrottle(state) {
   const update = state.pending
   state.pending = null
   state.timeout = false
-  if (!update) return
+  if (!update || !brightnessSubmissionIsCurrent(update.intent)) return
   state.lastTime = Date.now()
   try {
-    updateBrightness(update.id, update.level, update.useCap, update.vcp)
+    updateBrightness(update.id, update.level, update.useCap, update.vcp, true, update.intent)
   } catch (e) {
     console.error(e)
   }
@@ -3112,7 +3134,8 @@ function hasEnabledLinkedFeaturesForMonitor(monitor) {
   )
 }
 
-function applyLinkedFeatures(monitor, newLevel, useCap = true) {
+function applyLinkedFeatures(monitor, newLevel, useCap = true, intent) {
+  if (!brightnessSubmissionIsCurrent(intent)) return
   const featuresSettings = settings.monitorFeaturesSettings?.[monitor.hwid?.[1]]
   if (!featuresSettings) return
 
@@ -3127,22 +3150,29 @@ function applyLinkedFeatures(monitor, newLevel, useCap = true) {
       const capped = parseInt(normalizeBrightness(processedLevel, true, 0, maxBrightness))
       if (vcp === "0x62") {
         // Scale volume the same way the volume sliders do, so it respects the maximum override
-        updateBrightnessThrottle(monitor.id, scaleVolume(capped, monitor.features[vcp], featuresSettings[vcp]), useCap, false, "volume-raw")
+        updateBrightnessThrottle(monitor.id, scaleVolume(capped, monitor.features[vcp], featuresSettings[vcp]), useCap, false, "volume-raw", intent)
       } else {
-        updateBrightnessThrottle(monitor.id, capped, useCap, false, vcp)
+        updateBrightnessThrottle(monitor.id, capped, useCap, false, vcp, intent)
       }
     }
   }
 }
 
-function updateBrightness(index, newLevel, useCap = true, vcpValue = "brightness", clearTransition = true) {
-  if(isWindowsUserIdle) return false; // Skip if displays are off
+function updateBrightness(index, newLevel, useCap = true, vcpValue = "brightness", clearTransition = true, intent = undefined) {
+  if (!brightnessIntentIsCurrent(intent)) return false
   // NaN reaches the worker as null, which the VCP path writes as 0
   if (!Number.isFinite(parseFloat(newLevel))) {
     console.log(`updateBrightness: Ignoring invalid level for ${index}:`, newLevel)
     return false
   }
   try {
+    const submissions = []
+    const send = data => {
+      if (intent) intent.submitting = true
+      const result = monitorsThread.send(data, intent)
+      submissions.push(result)
+      return result
+    }
     let level = newLevel
     let vcp = "brightness"
     // Volume sliders have already converted percentages to raw DDC units.
@@ -3172,6 +3202,11 @@ function updateBrightness(index, newLevel, useCap = true, vcpValue = "brightness
       return false
     }
 
+    if (!intent && (vcpValue === "brightness" || vcpValue === "sdr")) {
+      intent = newBrightnessIntent(monitor.id, "manual", newLevel)
+    }
+    if (isWindowsUserIdle) return false // Record manual intent even when the transport cannot write yet.
+
     if (settings.hideDisplays?.[monitor.key] === true) {
       return false
     }
@@ -3190,8 +3225,8 @@ function updateBrightness(index, newLevel, useCap = true, vcpValue = "brightness
     // used for brightness, but queue feature work until it is safe to run.
     if ((monitor.featuresPending || monitor.featuresRefreshing) && vcp !== "gamma"
       && ((vcp !== "brightness" && vcp !== "sdr") || monitor.type === "none")) {
-      deferFeatureUpdate(monitor, newLevel, useCap, vcpValue, clearTransition)
-      return true
+      deferFeatureUpdate(monitor, newLevel, useCap, vcpValue, clearTransition, intent)
+      return false
     }
 
     if (clearTransition && currentTransition) {
@@ -3211,9 +3246,10 @@ function updateBrightness(index, newLevel, useCap = true, vcpValue = "brightness
     if (extendedMinimum) {
       const breakpoint = getExtendedMinimumBreakpoint(monitor)
       hardwareLevel = (level >= breakpoint ? (level - breakpoint) * 100 / (100 - breakpoint) : 0)
-      setTrackedGammaLevel(monitor, (level >= breakpoint
+      const gammaSubmission = setTrackedGammaLevel(monitor, (level >= breakpoint
         ? 100
-        : GAMMA_BRIGHTNESS_MIN + (level * (100 - GAMMA_BRIGHTNESS_MIN) / breakpoint)))
+        : GAMMA_BRIGHTNESS_MIN + (level * (100 - GAMMA_BRIGHTNESS_MIN) / breakpoint)), intent)
+      if (gammaSubmission) submissions.push(gammaSubmission)
     }
 
     const normalized = normalizeBrightness(hardwareLevel, false, (useCap ? monitor.min : 0), (useCap ? monitor.max : 100), (useCap ? monitor.calibration : []))
@@ -3229,7 +3265,7 @@ function updateBrightness(index, newLevel, useCap = true, vcpValue = "brightness
     }
 
     if (vcp === "sdr") {
-      monitorsThread.send({
+      send({
         type: "sdr",
         brightness: level,
         id: monitor.id
@@ -3244,7 +3280,7 @@ function updateBrightness(index, newLevel, useCap = true, vcpValue = "brightness
       monitor.brightness = level
       monitor.brightnessRaw = gammaLevel
       monitor.gammaBrightness = gammaLevel
-      monitorsThread.send({
+      send({
         type: "gamma",
         brightness: gammaLevel,
         id: monitor.id
@@ -3253,16 +3289,16 @@ function updateBrightness(index, newLevel, useCap = true, vcpValue = "brightness
       // The ramp replaced this display's brightness control, but its other
       // DDC/CI features still follow the slider.
       if (monitor.featuresPending && hasEnabledLinkedFeaturesForMonitor(monitor)) {
-        deferLinkedFeatureUpdate(monitor, newLevel, useCap)
+        deferLinkedFeatureUpdate(monitor, newLevel, useCap, intent)
       } else {
-        applyLinkedFeatures(monitor, newLevel, useCap)
+        applyLinkedFeatures(monitor, newLevel, useCap, intent)
       }
     } else if (monitor.type == "ddcci") {
       if (vcp === "brightness") {
         monitor.brightness = level
         monitor.brightnessRaw = normalized
         if (!skipHardware) {
-          monitorsThread.send({
+          send({
             type: "brightness",
             brightness: normalized * ((monitor.brightnessMax || 100) / 100),
             id: monitor.id
@@ -3276,9 +3312,9 @@ function updateBrightness(index, newLevel, useCap = true, vcpValue = "brightness
 
         // Apply linked DDC/CI features now, or replay them after enrichment.
         if (monitor.featuresPending && hasEnabledLinkedFeaturesForMonitor(monitor)) {
-          deferLinkedFeatureUpdate(monitor, newLevel, useCap)
+          deferLinkedFeatureUpdate(monitor, newLevel, useCap, intent)
         } else {
-          applyLinkedFeatures(monitor, newLevel, useCap)
+          applyLinkedFeatures(monitor, newLevel, useCap, intent)
         }
       } else {
         const vcpString = `0x${parseInt(vcp).toString(16).toUpperCase()}`
@@ -3295,7 +3331,7 @@ function updateBrightness(index, newLevel, useCap = true, vcpValue = "brightness
           }
           
           
-          monitorsThread.send({
+          send({
             type: "vcp",
             monitor: monitor.hwid.join("#"),
             code: parseInt(vcp),
@@ -3311,7 +3347,7 @@ function updateBrightness(index, newLevel, useCap = true, vcpValue = "brightness
       monitor.brightness = level
       monitor.brightnessRaw = normalized
       if (!skipHardware) {
-        monitorsThread.send({
+        send({
           type: "brightness",
           brightness: normalized * ((monitor.brightnessMax || 100) / 100),
           id: monitor.id
@@ -3320,7 +3356,7 @@ function updateBrightness(index, newLevel, useCap = true, vcpValue = "brightness
     } else if (monitor.type === "software") {
       monitor.brightness = level
       monitor.brightnessRaw = normalized
-      monitorsThread.send({
+      send({
         type: "brightness",
         brightness: normalized,
         id: monitor.id
@@ -3330,7 +3366,7 @@ function updateBrightness(index, newLevel, useCap = true, vcpValue = "brightness
       monitor.brightness = level
       monitor.brightnessRaw = normalized
       if (!skipHardware) {
-        monitorsThread.send({
+        send({
           type: "brightness",
           brightness: normalized
         })
@@ -3344,6 +3380,15 @@ function updateBrightness(index, newLevel, useCap = true, vcpValue = "brightness
 
     setTrayPercent()
     updateKnownDisplays()
+    return submissions.length ? Promise.all(submissions).then(results => {
+      if (intent) intent.submitting = false
+      const sent = results.every(result => result !== false)
+      if (sent && brightnessIntentIsCurrent(intent) && intent?.kind === "manual") {
+        const manual = manualScheduleOverrides.get(monitor.id)
+        if (manual) manual.submitted = true
+      }
+      return sent
+    }) : false
   } catch (e) {
     debug.error("Could not update brightness", e)
   }
@@ -3423,62 +3468,72 @@ function normalizeBrightness(brightness, normalize = false, min = 0, max = 100, 
 }
 
 let currentTransition = null
-function transitionBrightness(level, eventMonitors = [], stepSpeed = 1) {
-  if (currentTransition !== null) clearInterval(currentTransition);
-
-  // Slow down transition
+function transitionBrightness(level, eventMonitors = [], stepSpeed = 1, intent) {
+  if (!intent && currentTransition !== null) clearInterval(currentTransition)
   let transitionIntervalMult = 1
   switch (settings.adjustmentTimeSpeed) {
     case "slow": transitionIntervalMult = 4; break;
     case "slowest": transitionIntervalMult = 10; break;
-    default: transitionIntervalMult = 1; break;
   }
-
-  // Speed up transition
   let stepSpeedMult = 1
   switch (settings.adjustmentTimeSpeed) {
     case "fast": stepSpeedMult = 3; break;
     case "fastest": stepSpeedMult = 6; break;
-    default: stepSpeedMult = 1; break;
   }
-
-  const step = (stepSpeed * stepSpeedMult)
-
-  currentTransition = setInterval(() => {
-    if (recentlyWokeUp || isWindowsUserIdle) clearInterval(currentTransition);
-    let numDone = 0
-    for (let key in monitors) {
-      const monitor = monitors[key]
-
-      let normalized = level * 1
-      if (settings.adjustmentTimeIndividualDisplays) {
-        // If using individual monitor settings
-        normalized = (eventMonitors[monitor.id] >= 0 ? eventMonitors[monitor.id] : level)
-      }
-
-      if (settings.remaps) {
-        for (let remapName in settings.remaps) {
-          if (remapName == monitor.name) {
-            normalized = normalized
-          }
-        }
-      }
-      if (!Number.isFinite(monitor.brightness) || !Number.isFinite(parseFloat(normalized))) {
-        // Nothing to step from or to, so don't hold the transition open
-        numDone++
-      } else if (monitor.brightness < normalized + (step + 1) && monitor.brightness > normalized - (step + 1)) {
-        updateBrightness(monitor.id, normalized, undefined, undefined, false)
-        numDone++
-      } else {
-        updateBrightness(monitor.id, (monitor.brightness < normalized ? monitor.brightness + step : monitor.brightness - step), undefined, undefined, false)
-      }
-      sendToAllWindows('monitors-updated', monitors)
-      if (numDone === Object.keys(monitors).length) {
-        clearInterval(currentTransition);
-        currentTransition = null
-      }
+  const step = stepSpeed * stepSpeedMult
+  const targets = Object.values(monitors).filter(monitor => intent ? monitor.id === intent.id
+    : !settings.hideDisplays?.[monitor.key] && !shouldSkipDisplay(monitor)
+      && (['ddcci', 'wmi', 'studio-display', 'software'].includes(monitor.type) || usesGammaSlider(monitor))).map(monitor => {
+    const target = settings.adjustmentTimeIndividualDisplays && eventMonitors[monitor.id] >= 0 ? eventMonitors[monitor.id] : level
+    return { id: monitor.id, target, intent: intent || newBrightnessIntent(monitor.id, userIdleDimmed ? "idle" : "profile", target) }
+  })
+  return new Promise(resolve => {
+    let stepping = false
+    let stopped = false
+    const stop = (sent = false) => {
+      if (stopped) return
+      stopped = true
+      clearInterval(timer)
+      if (currentTransition === timer) currentTransition = null
+      if (intent && pendingBrightnessTransitions.get(intent.id)?.intent === intent) pendingBrightnessTransitions.delete(intent.id)
+      resolve(sent)
     }
-  }, settings.updateInterval * transitionIntervalMult)
+    const timer = setInterval(async () => {
+      if (stopped || stepping) return
+      if ((!intent && recentlyWokeUp) || isWindowsUserIdle || (intent && !brightnessSubmissionIsCurrent(intent))) {
+        stop()
+        return
+      }
+      stepping = true
+      let numDone = 0
+      let sent = true
+      try {
+        for (const entry of targets) {
+          if (stopped) return
+          if (!brightnessSubmissionIsCurrent(entry.intent)) { numDone++; sent = false; continue }
+          const monitor = Object.values(monitors).find(m => m.id === entry.id)
+          if (!monitor || !Number.isFinite(monitor.brightness) || !Number.isFinite(parseFloat(entry.target))) {
+            numDone++; sent = false; continue
+          }
+          const done = monitor.brightness < entry.target + step + 1 && monitor.brightness > entry.target - step - 1
+          const next = done ? entry.target : monitor.brightness + (monitor.brightness < entry.target ? step : -step)
+          const result = await updateBrightness(monitor.id, next, true, "brightness", false, entry.intent)
+          if (stopped) return
+          if (!result) { stop(); return }
+          if (done) numDone++
+          sendToAllWindows('monitors-updated', monitors)
+        }
+        if (numDone === targets.length) stop(sent)
+      } catch (error) {
+        console.log("Couldn't complete brightness transition", error)
+        stop()
+      } finally {
+        stepping = false
+      }
+    }, settings.updateInterval * transitionIntervalMult)
+    if (intent) pendingBrightnessTransitions.set(intent.id, { intent, stop })
+    else currentTransition = timer
+  })
 }
 
 function transitionlessBrightness(level, eventMonitors = []) {
@@ -4266,7 +4321,7 @@ function applyProfileBrightness(profile) {
     Object.values(monitors)?.forEach(monitor => {
       // Displays whose slider was never moved have no stored level. Use the 50 the settings slider shows.
       const level = profile.monitors?.[monitor.id]
-      updateBrightness(monitor.id, (Number.isFinite(level) ? level : 50), true, "brightness")
+      updateBrightness(monitor.id, (Number.isFinite(level) ? level : 50), true, "brightness", true, newBrightnessIntent(monitor.id, "profile", level))
     })
     sendToAllWindows('monitors-updated', monitors)
   } catch (e) {
@@ -4533,9 +4588,11 @@ app.on("ready", async () => {
     isRefreshing = false
     await refreshMonitors(true, true, false, hasEnabledLinkedFeatures())
 
-    if (settings.brightnessAtStartup) setKnownBrightness();
+    // Suppress only this startup interval; future schedule events still apply.
+    startupScheduleIdentity = currentScheduleIdentity()
+    if (settings.brightnessAtStartup) setKnownBrightness(false, false, 1, false);
     if (settings.checkTimeAtStartup) {
-      lastTimeEvent = false;
+      startupScheduleIdentity = false;
       setTimeout(() => handleBackgroundUpdate(true), 3500)
     }
     restartBackgroundUpdate()
@@ -4689,7 +4746,7 @@ function getDebugTrayMenuItems() {
       { label: "HIDE PANEL", type: 'normal', click: () => showPanel(false) },
       { label: "OPACITY 0", type: 'normal', click: () => mainWindow?.setOpacity(0) },
       { label: "OPACITY 1", type: 'normal', click: () => mainWindow?.setOpacity(1) },
-      { label: "DO CURRENT TOD", type: 'normal', click: () => applyCurrentAdjustmentEvent(true) },
+      { label: "DO CURRENT TOD", type: 'normal', click: () => applyCurrentAdjustmentEvent(true, true, true) },
       { label: "REMOVE ACRYLIC", type: 'normal', click: () => tryVibrancy(mainWindow, false) },
       { label: "PAUSE MOUSE", type: 'normal', click: () => pauseMouseEvents(true) },
       { label: "LAST ACTIVE WIN", type: 'normal', click: () => trySetForegroundWindow(forcedFocusID) }
@@ -5263,6 +5320,11 @@ function handleMonitorChange(t, e, d) {
 
   console.log("Hardware change detected.")
 
+  if (handleChangeTimeout1) {
+    clearTimeout(handleChangeTimeout1)
+    handleChangeTimeout1 = false
+  }
+
   const block = blockBadDisplays("handleMonitorChange")
 
   // Defer actions for a moment just in case of repeat events
@@ -5272,19 +5334,11 @@ function handleMonitorChange(t, e, d) {
   handleChangeTimeout2 = setTimeout(async () => {
     if(settings.recreateTray) recreateTray();
 
-    // Reset all known displays
-    await refreshMonitors(true, false, false, hasEnabledLinkedFeatures())
-
-    // During startup grace period, use current monitor brightness instead of saved profile
-    // This prevents overwriting brightness that was manually set before shutdown
-    if (!settings.disableAutoApply) {
-      if (isStartupGracePeriod) {
-        setKnownBrightness(true); // useCurrentMonitors = true to preserve current brightness
-      } else {
-        setKnownBrightness();
-      }
-    }
-    handleBackgroundUpdate(true) // Apply Time Of Day Adjustments
+    await reconcileBrightness(false, {
+      fullRefresh: true,
+      restore: !settings.disableAutoApply,
+      known: getKnownDisplays(isStartupGracePeriod)
+    })
 
     // If displays not shown, refresh mainWindow
     if(settings.reloadFlyout && !panelSize.visible) {
@@ -5318,6 +5372,7 @@ function clearRecentlyWokeUpLater() {
 // Handle resume from sleep/hibernation
 powerMonitor.on("resume", async () => {
   console.log("Resuming......")
+  cancelAutomaticBrightnessWork()
   recentlyWokeUp = true
   resumeRecoveryInProgress = true
   resumeRecoveryHandled = false
@@ -5362,25 +5417,18 @@ powerMonitor.on("resume", async () => {
     // has been disabled by the user. Hardware events are dropped while
     // recovery is in progress, so don't let panel interactions (which keep
     // extending pausedMonitorUpdates) stall it indefinitely.
-    const refreshWaitDeadline = Date.now() + 30000
-    while((isRefreshing || pausedMonitorUpdates) && Date.now() < refreshWaitDeadline) await Utils.wait(50)
-    const refreshRequested = Date.now()
-    await refreshMonitors(true, true, true, hasEnabledLinkedFeatures())
-
+    const completedBeforeRecovery = completedMonitorInventory
+    await reconcileBrightness(false, {
+      fullRefresh: true, bypassRateLimit: true, bypassWindowsIdle: true,
+      allowSchedule: !settings.disableAutoRefresh,
+      restore: !settings.disableAutoRefresh && !settings.disableAutoApply && !hasRecentlyInteracted,
+      known: getKnownDisplays()
+    })
     if (!settings.disableAutoRefresh) {
-      if (!settings.disableAutoApply && !hasRecentlyInteracted) setKnownBrightness();
       if(settings.recreateTray) recreateTray();
       if(settings.recreateFlyout && !panelSize.visible) restartPanel();
-
-      // Check if time adjustments should apply
-      applyCurrentAdjustmentEvent(true, false)
     }
-
-    // refreshMonitors returns silently when it can't run (thread died,
-    // another refresh in flight, updates paused). Only mark recovery as
-    // handled when the inventory actually completed, so unlock-screen can
-    // still trigger a refresh otherwise.
-    resumeRecoveryHandled = lastCompletedRefresh >= refreshRequested
+    resumeRecoveryHandled = completedMonitorInventory > completedBeforeRecovery
   } catch(error) {
     block.release()
     console.error("Couldn't restore monitor thread after resume.", error)
@@ -5396,6 +5444,7 @@ powerMonitor.on("resume", async () => {
 
 function handleMetricsChange(type) {
   console.log(`Event: handleMetricsChange (${type})`);
+  if (handleChangeTimeout2) return false
 
   if(resumeRecoveryInProgress) {
     console.log(`Resume recovery is already handling ${type}.`)
@@ -5413,19 +5462,11 @@ function handleMetricsChange(type) {
     // if handleMonitorChange is going to run, we don't need to do anything
     if(handleChangeTimeout2) return false;
 
-    // Do a quick check to ensure handles are all good
-    await refreshMonitors(true, false, false, hasEnabledLinkedFeatures())
-
-    // During startup grace period, use current monitor brightness instead of saved profile
-    // This prevents overwriting brightness that was manually set before shutdown
-    if (!settings.disableAutoApply && !hasRecentlyInteracted) {
-      if (isStartupGracePeriod) {
-        setKnownBrightness(true); // useCurrentMonitors = true to preserve current brightness
-      } else {
-        setKnownBrightness();
-      }
-    }
-    handleBackgroundUpdate(true) // Apply Time Of Day Adjustments
+    await reconcileBrightness(false, {
+      fullRefresh: true,
+      restore: !settings.disableAutoApply && !hasRecentlyInteracted,
+      known: getKnownDisplays(isStartupGracePeriod)
+    })
 
     handleChangeTimeout1 = false
   }, parseInt(settings.idleRestoreSeconds || 7) * 1000)
@@ -5438,6 +5479,7 @@ function handleMetricsChange(type) {
 
 powerMonitor.on("suspend", () => {
   console.log("Event: suspend")
+  cancelAutomaticBrightnessWork()
   recentlyWokeUp = true
   resumeRecoveryHandled = false
   if(recentlyWokeUpTimeout) {
@@ -5448,6 +5490,7 @@ powerMonitor.on("suspend", () => {
 powerMonitor.on("lock-screen", () => {
   console.log("Event: lock-screen");
   if (settings.disableOnLockScreen) {
+    cancelAutomaticBrightnessWork()
     recentlyWokeUp = true
     resumeRecoveryHandled = false
   }
@@ -5495,6 +5538,7 @@ let notIdleMonitor
 let lastIdleTime = 0
 
 let preIdleMonitors = {}
+let preIdleScheduleIdentity = false
 
 function getIdleSettingValue() {
   const detectIdleTime = (parseInt(settings.detectIdleTimeSeconds) + (settings.detectIdleTimeMinutes * 60))
@@ -5513,6 +5557,7 @@ function idleCheckLong() {
 
 async function startIdleCheckShort() {
   isUserIdle = true
+  preIdleScheduleIdentity = currentScheduleIdentity()
   await updateKnownDisplays(true, true)
   preIdleMonitors = Object.assign({}, lastKnownDisplays)
   console.log(`\x1b[36mStarted short idle monitor.\x1b[0m`)
@@ -5559,7 +5604,7 @@ function idleCheckShort() {
             if(settings.idleTransitionSpeed) {
               transitionMonitors[monitor.id] = 0
             } else {
-              updateBrightness(monitor.id, 0, true, "brightness")
+              updateBrightness(monitor.id, 0, true, "brightness", true, newBrightnessIntent(monitor.id, "idle", 0))
             }
           }
         })
@@ -5577,18 +5622,6 @@ function idleCheckShort() {
       clearInterval(notIdleMonitor)
       notIdleMonitor = false
 
-      // Different behavior depending on if idle dimming is on
-      if (settings.detectIdleTimeEnabled) {
-        // Always restore when dimmed
-        const block = blockBadDisplays("idle:restore")
-        setKnownBrightness(false)
-        block.release()
-      } else {
-        // Not dimmed, try checking ToD first. sKB as backup.
-        const foundEvent = applyCurrentAdjustmentEvent(true, true)
-        if (!foundEvent && !settings.disableAutoApply) setKnownBrightness(false);
-      }
-
       idleMonitorBlock?.release?.()
 
       // Wait a little longer, re-apply known brightness in case monitors take a moment, and finish up
@@ -5599,16 +5632,12 @@ function idleCheckShort() {
 
         const block = blockBadDisplays("idle:end")
 
-        // Similar logic to above
-        if (settings.detectIdleTimeEnabled) {
-          // Always restore when dimmed, then check ToD
-          setKnownBrightness(false)
-          applyCurrentAdjustmentEvent(true, false)
-        } else {
-          // Not dimmed, try checking ToD first. sKB as backup.
-          const foundEvent = applyCurrentAdjustmentEvent(true, true)
-          if (!foundEvent && !settings.disableAutoApply) setKnownBrightness(false)
-        }
+        reconcileBrightness(false, {
+          restore: !settings.disableAutoApply,
+          known: preIdleMonitors,
+          preIdle: preIdleScheduleIdentity === currentScheduleIdentity(),
+          bypassRateLimit: true
+        })
 
         block.release()
 
@@ -5619,6 +5648,253 @@ function idleCheckShort() {
   } catch (e) {
     console.log('Error in idleCheckShort', e)
   }
+}
+
+
+// Brightness intent ownership. Acceptance is per display and only follows transport.
+let completedMonitorInventory = 0
+let startupScheduleIdentity = false
+let scheduleIdentity = false
+const acceptedScheduleDisplays = new Map()
+const manualScheduleOverrides = new Map()
+const brightnessIntents = new Map()
+const pendingBrightnessTransitions = new Map()
+
+function syncScheduleIdentity() {
+  const identity = currentScheduleIdentity()
+  if (identity !== scheduleIdentity) {
+    scheduleIdentity = identity
+    acceptedScheduleDisplays.clear()
+    manualScheduleOverrides.clear()
+  }
+  return identity
+}
+
+function newBrightnessIntent(id, kind, target) {
+  const interval = syncScheduleIdentity()
+  pendingBrightnessTransitions.get(id)?.stop()
+  const intent = { id, kind, target, interval }
+  brightnessIntents.set(id, intent)
+  if (kind === "manual" && !settings.adjustmentTimeAnimate && getCurrentAdjustmentEvent()) {
+    intent.intervalBound = true
+    manualScheduleOverrides.set(id, { interval, target })
+  }
+  return intent
+}
+
+function brightnessSubmissionIsCurrent(intent) {
+  const valid = brightnessIntentIsCurrent(intent)
+  if (!valid && intent && brightnessIntents.get(intent.id) === intent
+    && (intent.kind !== "manual" || intent.intervalBound) && intent.interval !== currentScheduleIdentity()) {
+    reconcileBrightness(brightnessRecoveryInstant)
+  }
+  return valid
+}
+
+function brightnessIntentIsCurrent(intent) {
+  if (!intent) return true
+  if (intent.session?.cancelled) return false
+  if (brightnessIntents.get(intent.id) !== intent) return false
+  const monitor = Object.values(monitors).find(m => m?.id === intent.id)
+  if (!monitor || settings.hideDisplays?.[monitor.key] || shouldSkipDisplay(monitor)) return false
+  if (intent.kind === "idle") return userIdleDimmed
+  if (intent.kind === "manual") return !intent.intervalBound || intent.interval === currentScheduleIdentity()
+  if (intent.kind === "profile") return true
+  return intent.interval === currentScheduleIdentity()
+    && !tempSettings.pauseTimeAdjustments && !currentProfile?.setBrightness
+    && !userIdleDimmed && !isWindowsUserIdle
+    && (intent.kind !== "restore" || !settings.disableAutoApply)
+}
+let brightnessRecoveryPromise = false
+let brightnessRecoveryRequested = false
+let brightnessRecoveryInstant = true
+let brightnessRecoverySession = false
+
+function cancelAutomaticBrightnessWork() {
+  brightnessRecoverySession?.cancel?.()
+  for (const [id, intent] of brightnessIntents) {
+    if (intent.kind !== "schedule" && intent.kind !== "restore") continue
+    pendingBrightnessTransitions.get(id)?.stop()
+    brightnessIntents.delete(id)
+  }
+}
+
+function currentScheduleIdentity() {
+  const date = new Date()
+  return JSON.stringify([date.getFullYear(), date.getMonth(), date.getDate(),
+    getCurrentAdjustmentEvent(), settings.adjustmentTimes, settings.adjustmentTimeIndividualDisplays,
+    settings.adjustmentTimeAnimate, settings.adjustmentTimeLatitude, settings.adjustmentTimeLongitude,
+    settings.adjustmentTimeSpeed, settings.updateInterval, settings.hideDisplays, settings.remaps,
+    settings.sdrAsMainSliderDisplays, settings.gammaAsMainSliderDisplays,
+    settings.extendMinimumDisplays, settings.extendMinimumBreakpoints,
+    settings.monitorFeatures, settings.monitorFeaturesSettings,
+    settings.adjustmentTimeAnimate ? date.getHours() * 60 + date.getMinutes() : null])
+}
+
+function reconcileBrightness(instant = true, options = {}) {
+  if (options.allowSchedule !== false) startupScheduleIdentity = false
+  brightnessRecoveryRequested = true
+  brightnessRecoveryInstant = instant
+  if (brightnessRecoverySession) {
+    if (options.restore) {
+      brightnessRecoverySession.restore = true
+      brightnessRecoverySession.known = options.known
+      brightnessRecoverySession.preIdle = !!options.preIdle
+    }
+    if (options.fullRefresh) brightnessRecoverySession.fullRefresh = true
+    if (options.bypassWindowsIdle) brightnessRecoverySession.bypassWindowsIdle = true
+    if (options.bypassRateLimit) brightnessRecoverySession.bypassRateLimit = true
+    if (options.allowSchedule !== false) brightnessRecoverySession.allowSchedule = true
+    brightnessRecoverySession.wake()
+  }
+  if (brightnessRecoveryPromise) return brightnessRecoveryPromise
+  const session = {
+    controller: new AbortController(), fullRefresh: !!options.fullRefresh, bypassWindowsIdle: !!options.bypassWindowsIdle,
+    preIdle: !!options.preIdle, cancelled: false, completed: completedMonitorInventory, wake: () => {}, restore: !!options.restore,
+    bypassRateLimit: !!options.bypassRateLimit, known: options.known || {}, restored: new Map(), allowSchedule: options.allowSchedule !== false
+  }
+  brightnessRecoverySession = session
+  let cancel
+  const cancelled = new Promise(resolve => { cancel = resolve })
+  const finish = () => {
+    session.cancelled = true
+    session.controller.abort()
+    queuedMonitorCommands = queuedMonitorCommands.filter(command => {
+      if (command.intent?.session !== session) return true
+      command.resolve(false)
+      return false
+    })
+    session.wake()
+    cancel(false)
+  }
+  session.cancel = finish
+  const timer = setTimeout(finish, 30000)
+  const thread = monitorsThreadReal
+  thread?.once("exit", finish)
+  thread?.once("error", finish)
+  const wake = () => session.wake()
+  monitorsEventEmitter.on("ready", wake)
+  monitorsEventEmitter.on("brightness-inventory", wake)
+  monitorsEventEmitter.on("brightness-unpaused", wake)
+  brightnessRecoveryPromise = (async () => {
+    while (!session.cancelled) {
+      brightnessRecoveryRequested = false
+      const beforeWait = new Map(brightnessIntents)
+      const bypassRateLimit = session.bypassRateLimit || currentScheduleIdentity() !== scheduleIdentity
+      session.bypassRateLimit = false
+      const fullRefresh = session.fullRefresh
+      session.fullRefresh = false
+      await Promise.race([refreshMonitors(fullRefresh, bypassRateLimit, session.bypassWindowsIdle), cancelled])
+      if (session.cancelled) break
+      let pending = Object.keys(monitors).length === 0
+      if (completedMonitorInventory !== session.completed && monitorsThreadReady
+        && !tempSettings.pauseTimeAdjustments && !currentProfile?.setBrightness && !userIdleDimmed && !isWindowsUserIdle) {
+        session.completed = completedMonitorInventory
+        let readable = false
+        if (settings.adjustmentTimeAnimate && session.allowSchedule) {
+          try {
+            const known = await Promise.race([readKnownBrightnessJob(`${Date.now()}-${Math.random()}`, session.controller.signal), cancelled])
+            if (session.cancelled || !known) break
+            readable = new Set()
+            for (const monitor of Object.values(monitors)) {
+              if (brightnessIntents.get(monitor.id) !== beforeWait.get(monitor.id) || !known[monitor.id]) continue
+              readable.add(monitor.id)
+              Object.assign(monitor, known[monitor.id])
+              if (settings.sdrAsMainSliderDisplays?.[monitor.key] && monitor.hdr === "active") monitor.brightness = monitor.sdrLevel
+              if (usesGammaSlider(monitor)) monitor.brightness = normalizeBrightness(gammaLevelToSliderLevel(monitor.gammaBrightness), true, monitor.min, monitor.max, monitor.calibration)
+              if (usesExtendedMinimum(monitor)) {
+                const hardwareLevel = normalizeBrightness(monitor.brightness, true, monitor.min, monitor.max, monitor.calibration)
+                releaseExtendedMinimumRamp(monitor, hardwareLevel)
+                monitor.brightness = getExtendedMinimumLevel(monitor, hardwareLevel)
+              }
+            }
+          } catch (error) {
+            console.log("Couldn't read known brightness for animated adjustment", error)
+            break
+          }
+        }
+        if (tempSettings.pauseTimeAdjustments || currentProfile?.setBrightness || userIdleDimmed || isWindowsUserIdle) break
+        const identity = syncScheduleIdentity()
+        const event = session.allowSchedule ? getCurrentAdjustmentEvent() : false
+        if (event && settings.adjustmentTimeAnimate) {
+          const interpolated = getCurrentAdjustmentEventLERP()
+          if (typeof interpolated === "number") event.brightness = interpolated
+          else if (interpolated) event.monitors = interpolated
+        }
+        if (!event && !session.restore) break
+        for (const monitor of Object.values(monitors)) {
+          if (identity !== currentScheduleIdentity()) {
+            brightnessRecoveryRequested = true
+            break
+          }
+          if (settings.hideDisplays?.[monitor.key] || shouldSkipDisplay(monitor)) continue
+          if (readable && !readable.has(monitor.id)) continue
+          const manual = manualScheduleOverrides.get(monitor.id)
+          const accepted = !settings.adjustmentTimeAnimate && acceptedScheduleDisplays.has(monitor.id)
+          const transition = pendingBrightnessTransitions.get(monitor.id)
+          if (transition && brightnessIntentIsCurrent(transition.intent)) continue
+          if (manual && brightnessIntents.get(monitor.id)?.kind === "manual" && brightnessIntents.get(monitor.id)?.submitting) continue
+          let kind = "schedule"
+          let target
+          if (event && !manual && !accepted) {
+            target = settings.adjustmentTimeIndividualDisplays && event.monitors[monitor.id] >= 0 ? event.monitors[monitor.id] : event.brightness
+          } else {
+            if ((!session.restore || settings.disableAutoApply) && (!manual || manual.submitted)) continue
+            const known = Object.values(session.known).find(m => m?.id === monitor.id)
+            target = manual ? manual.target : (session.preIdle ? known?.brightness : acceptedScheduleDisplays.get(monitor.id)) ?? known?.brightness
+            kind = "restore"
+            if (session.restored.get(monitor.id) === target) continue
+          }
+          if (!Number.isFinite(parseFloat(target))) continue
+          if (!['ddcci', 'wmi', 'studio-display', 'software'].includes(monitor.type) && !usesGammaSlider(monitor)) {
+            pending = true
+            continue
+          }
+          if (settings.adjustmentTimeAnimate && Math.round(monitor.brightness) === Math.round(target)) continue
+          const intent = newBrightnessIntent(monitor.id, kind, target)
+          const accept = sent => {
+            if (!sent || !brightnessIntentIsCurrent(intent)) return
+            if (kind === "schedule") acceptedScheduleDisplays.set(monitor.id, target)
+            else session.restored.set(monitor.id, target)
+            if (manual) manual.submitted = true
+            console.log("Brightness reconciliation: software target accepted", { kind, target })
+          }
+          if (!settings.adjustmentTimeAnimate && !brightnessRecoveryInstant && settings.adjustmentTimeSpeed !== "instant") {
+            transitionBrightness(target, { [monitor.id]: target }, options.speed || 1, intent).then(accept)
+            continue
+          }
+          intent.session = session
+          const sent = await Promise.race([updateBrightness(monitor.id, target, true, "brightness", false, intent), cancelled])
+          if (sent && brightnessIntentIsCurrent(intent)) {
+            accept(sent)
+          } else pending = true
+        }
+      } else {
+        pending = true
+      }
+      if (tempSettings.pauseTimeAdjustments || currentProfile?.setBrightness || userIdleDimmed || isWindowsUserIdle) break
+      if (brightnessRecoveryRequested) continue
+      if (!pending || session.cancelled) break
+      if (!session.waitLogged) {
+        console.log("Brightness reconciliation: waiting for usable monitors")
+        session.waitLogged = true
+      }
+      await new Promise(resolve => { session.wake = resolve; if (session.cancelled) resolve() })
+      session.wake = () => {}
+    }
+  })().catch(error => console.log("Couldn't reconcile brightness", error)).finally(() => {
+    clearTimeout(timer)
+    session.controller.abort()
+    thread?.removeListener("exit", finish)
+    thread?.removeListener("error", finish)
+    monitorsEventEmitter.removeListener("ready", wake)
+    monitorsEventEmitter.removeListener("brightness-inventory", wake)
+    monitorsEventEmitter.removeListener("brightness-unpaused", wake)
+    brightnessRecoverySession = false
+    brightnessRecoveryPromise = false
+    console.log("Brightness reconciliation: finished", { cancelled: session.cancelled })
+  })
+  return brightnessRecoveryPromise
 }
 
 
@@ -5747,91 +6023,35 @@ function getSunCalcTimes() {
 }
 
 // If applicable, apply the current Time of Day Adjustment
-function applyCurrentAdjustmentEvent(force = false, instant = true) {
-  try {
-    if (tempSettings.pauseTimeAdjustments || currentProfile?.setBrightness) return false;
-    if (settings.adjustmentTimes.length === 0 || userIdleDimmed) return false;
-
-    const date = new Date()
-
-    // Reset when the selected schedule can have changed. Animated schedules
-    // still run once per background tick, but do not need to clear this cache.
-    if (force || (lastTimeEvent && lastTimeEvent.day != date.getDate())) {
-      console.log("New day (or forced)... resetting lastTimeEvent")
-      lastTimeEvent = false
-    }
-
-    // Find most recent event
-    const foundEvent = getCurrentAdjustmentEvent()
-    if (foundEvent) {
-      const isNewScheduleEvent = lastTimeEvent == false || lastTimeEvent.value < foundEvent.value
-      if (isNewScheduleEvent || settings.adjustmentTimeAnimate) {
-
-        if (settings.adjustmentTimeAnimate) {
-          // If LERPing, override foundEvent with interpolated value
-          lerp = getCurrentAdjustmentEventLERP()
-          if (typeof lerp === "number") {
-            foundEvent.brightness = lerp
-          } else if (typeof lerp === "object") {
-            foundEvent.monitors = lerp
-          }
-        }
-
-        console.log("Adjusting brightness automatically", foundEvent)
-        lastTimeEvent = Object.assign({}, foundEvent)
-        lastTimeEvent.day = new Date().getDate()
-
-        const applyAdjustment = (readableMonitorIds = false) => {
-          if (settings.adjustmentTimeAnimate) {
-            applyAnimatedBrightness(foundEvent.brightness, (foundEvent.monitors ? foundEvent.monitors : {}), readableMonitorIds)
-          } else if (instant || settings.adjustmentTimeSpeed === "instant") {
-            transitionlessBrightness(foundEvent.brightness, (foundEvent.monitors ? foundEvent.monitors : {}))
-          } else {
-            transitionBrightness(foundEvent.brightness, (foundEvent.monitors ? foundEvent.monitors : {}))
-          }
-        }
-
-        if (settings.adjustmentTimeAnimate) {
-          const requestId = `${Date.now()}-${Math.random()}`
-          readKnownBrightnessJob(requestId)
-            .then(knownBrightness => {
-              for (const monitor of Object.values(monitors)) {
-                const current = knownBrightness[monitor.id]
-                if (!current) continue
-                Object.assign(monitor, current)
-                if (settings.sdrAsMainSliderDisplays?.[monitor.key] && monitor.hdr === "active") {
-                  monitor.brightness = monitor.sdrLevel
-                }
-                if (usesGammaSlider(monitor)) {
-                  monitor.brightness = normalizeBrightness(gammaLevelToSliderLevel(monitor.gammaBrightness), true, monitor.min, monitor.max, monitor.calibration)
-                }
-                if (usesExtendedMinimum(monitor)) {
-                  const hardwareLevel = normalizeBrightness(monitor.brightness, true, monitor.min, monitor.max, monitor.calibration)
-                  releaseExtendedMinimumRamp(monitor, hardwareLevel)
-                  monitor.brightness = getExtendedMinimumLevel(monitor, hardwareLevel)
-                }
-              }
-              applyAdjustment(new Set(Object.keys(knownBrightness)))
-            })
-            .catch(error => console.log("Couldn't read known brightness for animated adjustment.", error))
-        } else {
-          refreshMonitors().then(applyAdjustment)
-        }
-        return foundEvent
+function applyCurrentAdjustmentEvent(force = false, instant = true, explicit = false) {
+  if (tempSettings.pauseTimeAdjustments || currentProfile?.setBrightness || userIdleDimmed) {
+    console.log("Time adjustment request: guarded", { explicit })
+    return false
+  }
+  if (force) startupScheduleIdentity = false
+  if (startupScheduleIdentity === currentScheduleIdentity()) return false
+  if (explicit) {
+    acceptedScheduleDisplays.clear()
+    manualScheduleOverrides.clear()
+    for (const [id, intent] of brightnessIntents) {
+      if (["manual", "schedule", "restore"].includes(intent.kind)) {
+        pendingBrightnessTransitions.get(id)?.stop()
+        brightnessIntents.delete(id)
       }
     }
-  } catch (e) {
-    console.log("Error applying current Time of Day Adjustment", e)
   }
-
+  const event = getCurrentAdjustmentEvent()
+  if (!event) {
+    console.log("Time adjustment request: no current event", { explicit })
+    return false
+  }
+  console.log("Time adjustment request: reconcile", { explicit, time: event.time, instant })
+  reconcileBrightness(instant, { bypassRateLimit: explicit })
+  return event
 }
 
 
-let lastTimeEvent = {
-  hour: new Date().getHours(),
-  minute: new Date().getMinutes(),
-  day: new Date().getDate()
-}
+
 function handleBackgroundUpdate(force = false) {
   console.log("Event: handleBackgroundUpdate");
 
@@ -6054,7 +6274,7 @@ function handleCommandLine(event, argv, directory, additionalData) {
       }
 
       if (usetime) {
-        applyCurrentAdjustmentEvent(true, false)
+        applyCurrentAdjustmentEvent(true, false, true)
       }
 
     }
@@ -6265,7 +6485,7 @@ const handleClientMessage = async (message, remote) => {
     } else if (data.type === "checktime") {
       // data.type === "checktime"
       // Use time adjustments
-      applyCurrentAdjustmentEvent(true, false)
+      applyCurrentAdjustmentEvent(true, false, true)
     } else if (data.type === "refresh") {
       // data.type === "refresh"
       // Force refresh monitors
