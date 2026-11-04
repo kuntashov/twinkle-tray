@@ -12,7 +12,7 @@ Ready now: SR-1. SR-2 may independently inspect Actions policy, credentials and 
 
 ## SR-1 — Reconcile current schedule and restoration through one brightness owner
 
-**State:** source implemented, independent Standards/Spec re-review READY at `4e04eaba8bd23134558e6f5c2101f7702bb9eaf0`, integrated through `55849a1`; ordinary integrated Node runner 54/54 PASS. **Unblocks:** SR-2 exact-commit build/runtime acceptance. **Owner:** one implementation agent in its dedicated worktree. **Coverage:** AC1–AC14 and software/README portion of AC15. Evidence: [review record](../../docs/verification/schedule-reconcile-review.md), [author handoff](../../docs/schedule-reconcile-sr1-handoff.md).
+**State:** source complete at `b0bb8b22f594adefdda1f281a08c7772bb9af5d6`; Standards, Spec and fresh final code review READY with zero open confirmed findings. Integrated through `b0c636f`; ordinary integrated runner 64/64 PASS. **Owner:** one implementation agent in its dedicated worktree. **Coverage:** AC1–AC14 and software/README portion of AC15. Evidence: [review record](../../docs/verification/schedule-reconcile-review.md), [author handoff](../../docs/schedule-reconcile-sr1-handoff.md).
 
 ### User-visible result
 
@@ -48,7 +48,7 @@ Deliver commit SHA, branch/base, changed behavior, criterion-to-test mapping, te
 
 ## SR-2 — Produce and exercise the reviewed Windows artifact
 
-**State:** ready for exact reviewed integration-commit build. Baseline Windows preflight succeeded; dedicated VM toolchain and baseline native runtime executed separately. Patched packaged tests and fresh final integration review pending. **Depends on:** SR-1 and resolved independent review (satisfied). **Coverage:** packaged AC15, AC16–AC17, regression checks for AC1–AC14 on the fixed commit.
+**State:** ready for new exact-commit Windows build and patched VM runtime. Baseline Windows preflight and VM native preparation succeeded; b697381 remains superseded/cancelled and is not accepted. **Depends on:** SR-1 and code review gates (satisfied); final CI/VM evidence remains required. **Coverage:** packaged AC15, AC16–AC17, regression checks for AC1–AC14 on the fixed commit.
 
 ### Deliverable
 
