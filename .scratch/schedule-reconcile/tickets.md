@@ -12,7 +12,7 @@ Ready now: SR-1. SR-2 may independently inspect Actions policy, credentials and 
 
 ## SR-1 — Reconcile current schedule and restoration through one brightness owner
 
-**State:** ready for assignment, subject to the finalized specification challenge corrections. **Blocks:** SR-2 build/runtime acceptance. **Owner:** one implementation agent in its dedicated worktree. **Coverage:** AC1–AC14 and software/README portion of AC15.
+**State:** in implementation after accepted independent specification challenge. **Blocks:** SR-2 build/runtime acceptance. **Owner:** one implementation agent in its dedicated worktree. **Coverage:** AC1–AC14 and software/README portion of AC15.
 
 ### User-visible result
 
@@ -48,7 +48,7 @@ Deliver commit SHA, branch/base, changed behavior, criterion-to-test mapping, te
 
 ## SR-2 — Produce and exercise the reviewed Windows artifact
 
-**State:** blocked on reviewed SR-1 commit for build/runtime acceptance; prerequisite inspection may proceed. **Depends on:** SR-1 and resolved independent review. **Coverage:** packaged AC15, AC16–AC17, regression checks for AC1–AC14 on the fixed commit.
+**State:** CI prerequisites independently reviewed; clean Windows preflight in progress. Build/runtime acceptance still blocked on reviewed SR-1 commit. Dedicated VM toolchain and runner preparation completed, actual packaged app tests pending. **Depends on:** SR-1 and resolved independent review. **Coverage:** packaged AC15, AC16–AC17, regression checks for AC1–AC14 on the fixed commit.
 
 ### Deliverable
 
