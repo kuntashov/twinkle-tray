@@ -1,0 +1,2 @@
+db5fc53083a26fc2f3b946ac4d833c19e36bbba7201b6b7089fbd6d854803888  Twinkle.Tray.v1.18.0-beta2.exe
+4da512544ffd3ea309f98ee1cd5aaef80f515657fe5220ffd1dc4e15855b457f  Twinkle.Tray.v1.18.0-beta2-portable.zip

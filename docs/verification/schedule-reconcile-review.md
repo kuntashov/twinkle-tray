@@ -106,3 +106,18 @@ Source chain `d0a8e2d → 39113a8 → b0bb8b2` corrected these cases. Component 
 **Standards READY, Spec READY, fresh final code review READY** at source `b0bb8b22f594adefdda1f281a08c7772bb9af5d6`; zero open confirmed code findings. Reviewers independently ran 58 schedule + 6 volume tests, negative control, syntax and diff checks. The fresh reviewer also repeated the actual no-record/genuine-no-op/gamma-reset/queued-replacement/first-event reproductions. No reviewer executed host native/app operations.
 
 The orchestrator independently passed the ordinary isolated runner 64/64, integrated all three source revisions through `b0c636f`, then passed 64/64 again and the full-base diff check. Normalized canonical source SHA-256 is `e8b14f873a0c70f45ad15c689f94cb64462ebb4536ac1cbd613cbf0d9a2c59d0`. The code is ready for a new exact-commit Windows build and patched VM evidence; source review does not substitute for those gates.
+
+## Final evidence acceptance
+
+**READY for the completed authorized software scope and a human physical stage. Zero open blocking findings.** The fresh final reviewer independently audited build/source `5770e75b6de7a4e7ac0fda3133761f4dad888235`, the primary CI logs/TAP and all six VM attempt journals/proofs, rather than relying on summary verdicts.
+
+- Windows CI run 41847657991 succeeded on attempt 1; ordinary tests 64/64 and installer/portable packaging passed.
+- Outer/payload hashes, original manifest, exact package.versionBuild and normalized packed source matched the reviewed source. ASAR inspection on the host was read-only; no host application/native launch occurred.
+- VM exact source 64/64, specific original RED and patched GREEN were independently verified, including all eight normalized production/test hashes.
+- Four native cases used the unmodified packaged build and real second EXE; a fresh explicit:true log marker belonged to the primary process and appeared after spawn.
+- Actual native monitor-power notifications 1→0→1, presence 0→2→0, refresh and post-wake CLI were confirmed. The blocked idle2 preflight performed no power request and was excluded from successful-case counts.
+- All six attempt restoration journals and final process/payload checks passed: cleanup failures 0, Twinkle processes 0, source/payload unchanged.
+
+Limits remain explicit: one virtual display type none, zero eligible brightness endpoints; no physical DDC/CI/WMI write/readback, lock/unlock, sleep/resume or reboot proof. The existing initial-idle2/no-worker scenario is documented. Working host Twinkle, restart VBS/task, startup, brightness, time, drivers and lifecycle were not changed.
+
+The final [delivery](schedule-reconcile-delivery.md), [VM](schedule-reconcile-vm.md), [build](schedule-reconcile-windows-build.md) and [physical/rollback plan](schedule-reconcile-physical-check.md) preserve those boundaries and distinguish baseline/superseded runs. Completion stops before all live physical-host tests.

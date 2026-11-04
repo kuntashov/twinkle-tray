@@ -48,7 +48,7 @@ Deliver commit SHA, branch/base, changed behavior, criterion-to-test mapping, te
 
 ## SR-2 — Produce and exercise the reviewed Windows artifact
 
-**State:** ready for new exact-commit Windows build and patched VM runtime. Baseline Windows preflight and VM native preparation succeeded; b697381 remains superseded/cancelled and is not accepted. **Depends on:** SR-1 and code review gates (satisfied); final CI/VM evidence remains required. **Coverage:** packaged AC15, AC16–AC17, regression checks for AC1–AC14 on the fixed commit.
+**State:** complete for the authorized software/VM scope at build commit `5770e75b6de7a4e7ac0fda3133761f4dad888235`; final independent acceptance READY. Windows CI 64/64 plus installer/portable PASS, exact artifact/ASAR identity verified, VM source 64/64 and original-RED/patched-GREEN, 4/4 native CLI cases and actual monitor-power transition PASS; all 6 attempts restored/processes 0. **Limits:** no eligible VM brightness endpoint, no physical DDC/WMI proof; lock/sleep/reboot not performed and initial-idle limitation documented. **Evidence:** [delivery](../../docs/verification/schedule-reconcile-delivery.md), [VM](../../docs/verification/schedule-reconcile-vm.md), [CI](../../docs/verification/schedule-reconcile-windows-build.md). b697381 remains superseded/cancelled. **Coverage:** packaged AC15, AC16–AC17, regression checks for AC1–AC14 on the fixed commit.
 
 ### Deliverable
 
@@ -69,4 +69,4 @@ Return exact commit/branch, artifact location/hash, CI or fallback build evidenc
 
 ## Ticket completion record
 
-Update each ticket with final commit(s), independent-review result and evidence links when its gate is actually satisfied. A build, mock test or partial VM smoke alone does not mark both tickets complete.
+SR-1 completed through reviewed source `b0bb8b22f594adefdda1f281a08c7772bb9af5d6`, integrated into build `5770e75b6de7a4e7ac0fda3133761f4dad888235`. SR-2 completed through the exact build and VM evidence linked above; a fresh independent final reviewer audited primary CI/VM logs, hashes, process delivery and restoration journals and returned READY with zero open blocking findings. Physical host actions remain a separately authorized human stage; no software/VM pass is presented as physical brightness proof.

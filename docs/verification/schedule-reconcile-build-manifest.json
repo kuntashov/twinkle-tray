@@ -1,0 +1,18 @@
+{
+  "commit": "5770e75b6de7a4e7ac0fda3133761f4dad888235",
+  "version": "1.18.0-beta2",
+  "versionBuild": "1.18.0-beta2+5770e75b6de7a4e7ac0fda3133761f4dad888235",
+  "runUrl": "https://github.com/kuntashov/twinkle-tray/actions/runs/41847657991",
+  "artifacts": [
+    {
+      "name": "Twinkle.Tray.v1.18.0-beta2.exe",
+      "sizeBytes": 90725731,
+      "sha256": "db5fc53083a26fc2f3b946ac4d833c19e36bbba7201b6b7089fbd6d854803888"
+    },
+    {
+      "name": "Twinkle.Tray.v1.18.0-beta2-portable.zip",
+      "sizeBytes": 120162362,
+      "sha256": "4da512544ffd3ea309f98ee1cd5aaef80f515657fe5220ffd1dc4e15855b457f"
+    }
+  ]
+}
