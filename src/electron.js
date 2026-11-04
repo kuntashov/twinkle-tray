@@ -1555,7 +1555,9 @@ function releaseExtendedMinimumRamp(monitor, hardwareLevel) {
 // can't outrun SetDeviceGammaRamp.
 function setTrackedGammaLevel(monitor, level, intent) {
   const gammaLevel = Math.round(minMax(level, GAMMA_BRIGHTNESS_MIN, 100))
-  if (monitor.gammaBrightness === gammaLevel) return false
+  // Cache tracks requested levels; pending or rejected submissions must be reapplied.
+  const previousSubmission = gammaBrightnessSubmissions.get(monitor.id)
+  if (monitor.gammaBrightness === gammaLevel && (!previousSubmission || previousSubmission.accepted)) return false
 
   monitor.gammaBrightness = gammaLevel
   const submission = setGammaBrightnessThrottle(monitor.id, gammaLevel, intent)
@@ -3038,12 +3040,19 @@ function pauseMonitorUpdates() {
 // bypasses the tracked brightness that normal updates maintain.
 let gammaBrightnessTimeout = false
 let gammaBrightnessQueue = {}
+const gammaBrightnessSubmissions = new Map()
 function setGammaBrightnessThrottle(id, level, intent) {
+  const update = { level, intent, accepted: false }
+  gammaBrightnessSubmissions.set(id, update)
   if (!brightnessSubmissionIsCurrent(intent)) return false
   gammaBrightnessQueue[id]?.resolve?.(false)
-  let resolve
-  const submission = new Promise(done => { resolve = done })
-  gammaBrightnessQueue[id] = { level, intent, resolve }
+  const submission = new Promise(resolve => {
+    update.resolve = sent => {
+      if (gammaBrightnessSubmissions.get(id) === update && brightnessIntentIsCurrent(intent)) update.accepted = sent !== false
+      resolve(sent)
+    }
+  })
+  gammaBrightnessQueue[id] = update
   if (!gammaBrightnessTimeout) flushGammaBrightness()
   return intent ? submission : true
 }
@@ -5675,9 +5684,9 @@ function newBrightnessIntent(id, kind, target) {
   pendingBrightnessTransitions.get(id)?.stop()
   const intent = { id, kind, target, interval }
   brightnessIntents.set(id, intent)
-  if (kind === "manual" && !settings.adjustmentTimeAnimate && getCurrentAdjustmentEvent()) {
+  if (kind === "manual" && !settings.adjustmentTimeAnimate && settings.adjustmentTimes.length > 0) {
     intent.intervalBound = true
-    manualScheduleOverrides.set(id, { interval, target })
+    if (getCurrentAdjustmentEvent()) manualScheduleOverrides.set(id, { interval, target })
   }
   return intent
 }

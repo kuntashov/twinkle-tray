@@ -13,6 +13,101 @@ test('partial inventory retries the current evening target without rewriting its
     assert.deepEqual(h.messages.map(m => [m.id, Math.round(m.brightness)]), [['A', 55], ['B', 45]])
 })
 
+test('a real gamma reset cannot let a rejected old-interval restore suppress the current ramp', async () => {
+    const h = harness()
+    h.c.monitors.B.excluded = true
+    h.c.monitors.A.gammaBrightness = 100
+    h.c.settings.extendMinimumDisplays = { A: true }
+    h.c.settings.extendMinimumBreakpoints = { A: 60 }
+    h.c.settings.adjustmentTimes[2].monitors.A = 30
+    h.c.settings.adjustmentTimes[3].monitors.A = 30
+    h.c.applyCurrentAdjustmentEvent()
+    await h.settle()
+    await h.advance(200)
+    assert.deepEqual(h.messages.map(m => [m.type, Math.round(m.brightness)]), [['gamma', 60], ['brightness', 0]])
+    h.messages.length = 0
+    h.setTime(2026, 10, 4, 22, 1)
+    h.c.refreshMonitorsJob = async () => ({ monitors: {
+        A: { ...h.c.monitors.A, gammaBrightness: 100, brightness: 0, brightnessRaw: 0 },
+        B: { ...h.c.monitors.B }
+    } })
+    h.c.applyCurrentAdjustmentEvent()
+    await h.settle()
+    await h.advance(200)
+    assert.deepEqual(h.messages.map(m => [m.type, Math.round(m.brightness)]), [['gamma', 60]])
+    assert.equal(h.run('acceptedScheduleDisplays.get("A")'), 30)
+})
+
+test('same-valued manual brightness replaces an unsubmitted gamma target from the old intent', async () => {
+    const h = harness()
+    h.c.monitors.B.excluded = true
+    h.c.monitors.A.gammaBrightness = 100
+    h.c.settings.extendMinimumDisplays = { A: true }
+    h.c.settings.extendMinimumBreakpoints = { A: 60 }
+    h.c.settings.adjustmentTimes[2].monitors.A = 30
+    h.c.setGammaBrightnessThrottle('A', 90)
+    h.c.applyCurrentAdjustmentEvent()
+    await h.settle()
+    h.c.updateBrightness('A', 30)
+    await h.advance(200)
+    assert.deepEqual(h.messages.map(m => [m.type, Math.round(m.brightness)]), [['gamma', 90], ['brightness', 0], ['gamma', 60]])
+    assert.equal(h.run('manualScheduleOverrides.get("A").submitted'), true)
+    assert.equal(h.run('acceptedScheduleDisplays.has("A")'), false)
+})
+
+test('manual brightness without any configured schedule remains independent of the date', async () => {
+    const h = harness()
+    h.c.settings.adjustmentTimes = []
+    h.c.monitors.B.excluded = true
+    h.setTime(2026, 10, 4, 5, 59)
+    h.c.isRefreshing = true
+    h.c.updateBrightness('A', 70)
+    h.setTime(2026, 10, 5, 6, 1)
+    h.c.isRefreshing = false
+    await h.run('flushQueuedMonitorCommands()')
+    await h.settle()
+    assert.deepEqual(h.messages.map(m => [m.id, Math.round(m.brightness)]), [['A', 70]])
+    assert.equal(h.run('manualScheduleOverrides.size'), 0)
+    assert.equal(h.run('acceptedScheduleDisplays.size'), 0)
+})
+
+test('manual pending before the first event keeps its no-event date and settings identity', async () => {
+    for (const change of ['none', 'date', 'settings']) {
+        const h = harness()
+        h.c.settings.adjustmentTimes.shift()
+        h.c.monitors.B.excluded = true
+        h.setTime(2026, 10, 4, 5, 59)
+        h.c.isRefreshing = true
+        h.c.updateBrightness('A', 70)
+        if (change === 'date') h.setTime(2026, 10, 5, 5, 59)
+        if (change === 'settings') h.c.settings.adjustmentTimes[0].monitors.A = 99
+        h.c.isRefreshing = false
+        await h.run('flushQueuedMonitorCommands()')
+        await h.settle()
+        assert.deepEqual(h.messages.map(m => [m.id, Math.round(m.brightness)]), change === 'none' ? [['A', 70]] : [])
+        assert.equal(h.run('manualScheduleOverrides.size'), 0)
+        assert.equal(h.run('acceptedScheduleDisplays.size'), 0)
+        assert.equal(h.run('brightnessRecoveryPromise'), false)
+    }
+})
+
+test('manual queued before the first event expires when that event arrives without a trigger', async () => {
+    const h = harness()
+    h.c.settings.adjustmentTimes.shift()
+    h.c.monitors.B.excluded = true
+    h.setTime(2026, 10, 4, 5, 59)
+    h.c.isRefreshing = true
+    h.c.updateBrightness('A', 70)
+    assert.equal(h.run('manualScheduleOverrides.size'), 0)
+    assert.equal(h.run('acceptedScheduleDisplays.size'), 0)
+    h.setTime(2026, 10, 4, 6, 1)
+    h.c.isRefreshing = false
+    await h.run('flushQueuedMonitorCommands()')
+    await h.settle()
+    assert.deepEqual(h.messages.map(m => [m.id, Math.round(m.brightness)]), [['A', 100]])
+    assert.equal(h.run('brightnessRecoveryPromise'), false)
+})
+
 test('transport failure after pause-driven restore selection waits without a busy retry', async () => {
     const h = harness()
     h.c.monitors.B.excluded = true

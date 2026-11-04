@@ -47,8 +47,8 @@ CLI process, native worker or native test was run here.
 
 | Command | Final result |
 |---|---|
-| `node --test tests/schedule-reconcile.test.cjs tests/volume-values.test.cjs` | **54/54 PASS**, exit 0; ordinary isolated runner, narrow approved execution |
-| `node tests/schedule-reconcile.test.cjs` | **48/48 PASS**, exit 0; complete direct module load |
+| `node --test tests/schedule-reconcile.test.cjs tests/volume-values.test.cjs` | **59/59 PASS**, exit 0; ordinary isolated runner, narrow approved execution |
+| `node tests/schedule-reconcile.test.cjs` | **53/53 PASS**, exit 0; complete direct module load |
 | `node tests/volume-values.test.cjs` | **6/6 PASS**, exit 0; complete direct module load |
 | `node tests/schedule-negative-control.cjs --patched` | **1/1 PASS**, exit 0 |
 | `node --check src/electron.js` | exit 0 |
@@ -87,7 +87,7 @@ negative-control result.
   **1 assertion failure, exit 1**: expected `A55, B45`, actual `A55`. No missing
   new-helper/API exception occurs.
 - Current patched `src/electron.js` canonical Git-blob SHA-256:
-  `6f438a38d18078238c0a1a49e8b405f647ff2acd9d30ec06511c24777d28139e`.
+  `6e7bc3336de486e3ed2ba4cfce1f2684dc2ce82d0fae8be9559bdf3023864c23`.
   The raw implementation checkout is LF and has the same digest. A CRLF
   checkout can have different bytes under `* text=auto`; compare normalized
   content or the Git blob. No source digest here is an ASAR/artifact digest.
@@ -125,15 +125,15 @@ distinctive phrases make the matching tests easy to find.
 | AC2 | `real paused, rate-limited and failed refresh`, `failed software send`, `skipped refresh`, `empty current inventory` |
 | AC3 | `partial inventory`, `newly-ready inventory event`, `temporarily unavailable manually corrected display`; only current inventory is iterated |
 | AC4 | `overlapping actual unlock` crosses 22:00; `animated brightness is recalculated` crosses a read wait |
-| AC5 | `actual refresh generations`, `read continuations completed in reverse order`, `actual queued sender`, `sendNow rechecks`, `awaited peer submission` |
-| AC6 | `obsolete deferred brightness and linked effects`, `manual throttle`, `extended-minimum gamma`; existing six volume tests |
+| AC5 | `actual refresh generations`, `read continuations completed in reverse order`, `actual queued sender`, `sendNow rechecks`, `awaited peer submission`, `manual queued before the first event` |
+| AC6 | `obsolete deferred brightness and linked effects`, `manual throttle`, `extended-minimum gamma`, real gamma reset and same-valued manual retag tests; existing six volume tests |
 | AC7 | actual resume/unlock/metrics/hardware/idle callbacks; `late saved known brightness`, `delayed idle return` |
 | AC8 | `same-interval known restoration`, `full dates`, case-insensitive `UseTime`; actual SDR/gamma primary conversion |
 | AC9 | `manual brightness before first acceptance`, `temporarily unavailable manually corrected display`, `direct manual brightness ... off` |
 | AC10 | `profile changes`, `pause and idle guards`, `current visibility settings`, `pause enabled during a queued schedule send`; real read/send continuations and permitted restore reselection |
 | AC11 | `valid smooth transition` lasts 80 seconds with a pending peer and readiness expiry; equivalent recovery, callback cancellation, idle smooth peers and real resume tests |
 | AC12 | per-display delayed LERP, actual correlated read with linked overnight interpolation, partial readable IDs, failure and superseded read |
-| AC13 | `full dates, backwards time`, `before the first event today`; date/month boundaries and no previous-day carry |
+| AC13 | `full dates, backwards time`, `before the first event today`, both pending-manual-before-first-event tests; date/month/settings identity, first-event arrival and no previous-day carry |
 | AC14 | actual read cleanup, readiness timeout/queue cleanup, worker-exit reverse completions, later normal retry; no permanent retry timer |
 | AC15 software | actual `handleCommandLine`, actual startup settings block/background scheduling, later lock/unlock after startup-off; README |
 
@@ -177,8 +177,59 @@ The test now sends A75 once, leaves schedule acceptance empty and releases the o
 `transport failure after pause-driven restore selection waits without a busy retry`
 also passes: exactly one restore IPC attempt fails, then the owner waits for an event
 or the existing bounded deadline; no further attempt occurs before timeout cleanup.
-The current ordinary runner passes **54/54**, and direct loads pass **48/48 + 6/6**.
-This correction awaits independent Spec re-review; no author approval is asserted.
+That correction snapshot, `4e04eaba8bd23134558e6f5c2101f7702bb9eaf0`, passed **54/54**
+in the ordinary runner and **48/48 + 6/6** by direct loads. No author approval is asserted.
+
+### First-event boundary found by fresh integration review
+
+Fresh integration review of source equivalent to `4e04eab` found another P2: a
+manual request queued at 05:59, before the first event, did not expire when the
+queue flushed at 06:01 without another trigger. The real-queue regression
+`manual queued before the first event expires when that event arrives without a
+trigger` reproduced **RED: A70 instead of the current first-event A100**.
+
+The minimal correction binds nonanimated pending manual intents with a configured,
+nonempty schedule to the existing date/event/settings identity, including the
+no-event identity. The separate manual override marker is still created only when
+a current event exists.
+Thus first-event arrival invalidates the pending A70 and requests current A100,
+without falsely accepting a schedule before its first event.
+
+The companion test `manual pending before the first event keeps its no-event date
+and settings identity` confirms that an unchanged 05:59 request still sends manual
+A70, while changed no-event date/settings drop the obsolete pending request without
+any schedule write, acceptance or manual override marker. The countercase
+`manual brightness without any configured schedule remains independent of the date`
+preserves standalone manual A70 across a date change when `adjustmentTimes=[]`.
+
+### Gamma cache and submission ownership found by fresh integration review
+
+The final reviewer also reproduced a P2 with actual gamma-reset helpers: an old
+interval's reset restore optimistically cached gamma60, but its send was rejected.
+The new interval's equal target then deduplicated against that unsubmitted cache.
+`a real gamma reset cannot let a rejected old-interval restore suppress the current
+ramp` reproduced **RED: no gamma60 submission after the reset**.
+
+The companion reject-after-wait scenario also reproduced RED: gamma90 primed the
+real throttle, schedule target30 cached a pending gamma60, then a same-valued manual
+target30 superseded its intent. The old gamma60 was dropped, while the new target
+incorrectly deduplicated. `same-valued manual brightness replaces an unsubmitted
+gamma target from the old intent` observed only gamma90 + hardware0, missing the
+current manual gamma60.
+
+Both cases now execute actual `usesGammaRamp` and `restoreGammaAfterReset` by default
+in the shared harness, alongside the existing real gamma/extended-minimum functions.
+The correction tracks the latest gamma request's software submission result
+separately from the requested level cached on the monitor. Pending/rejected or
+superseded gamma cannot suppress an equal current target. Only the matching latest
+request and still-current intent can mark software acceptance; an older callback
+cannot confirm a newer request. Both real-queue regressions now submit gamma60 for
+the current intent. This adds no native acknowledgement protocol or physical claim.
+
+The current ordinary runner passes **59/59**, and direct loads pass **53/53 + 6/6**.
+The original-production negative control still fails specifically on missing B45
+with the expanded real-helper harness; the patched control passes. Independent final
+re-review and a build from the subsequently accepted source remain required.
 
 ## Runtime handoff and limits
 

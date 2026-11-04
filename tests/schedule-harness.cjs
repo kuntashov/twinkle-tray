@@ -46,7 +46,7 @@ function harness(source = productionSource) {
         usesGammaSlider: () => false, usesExtendedMinimum: () => false,
         shouldSkipDisplay: m => !!m.excluded,
         setTrayPercent() {}, updateKnownDisplays() {}, sendToAllWindows() {},
-        applyOrder() {}, applyRemaps() {}, applyHotkeys() {}, restoreGammaAfterReset() {},
+        applyOrder() {}, applyRemaps() {}, applyHotkeys() {},
         lightSensor: { setMonitors() {}, async resume() {} }, setIsRefreshing(value) { c.isRefreshing = value },
         refreshMonitorsJob: async () => ({ monitors: c.monitors }),
         readKnownBrightnessJob: async () => Object.fromEntries(Object.values(c.monitors).map(m => [m.id, { brightness: m.brightness }])),
@@ -72,7 +72,7 @@ function harness(source = productionSource) {
         waitForMonitorThreadReady: async () => {}, hasEnabledLinkedFeatures: () => false
     })
     Object.assign(c, {
-        gammaBrightnessQueue: {}, gammaBrightnessTimeout: false
+        gammaBrightnessQueue: {}, gammaBrightnessTimeout: false, gammaBrightnessSubmissions: new Map()
     })
     for (const name of ['GAMMA_BRIGHTNESS_MIN', 'EXTENDED_MINIMUM_FLOOR_TOLERANCE',
         'EXTENDED_MINIMUM_BREAKPOINT_DEFAULT', 'EXTENDED_MINIMUM_BREAKPOINT_MAX']) {
@@ -94,7 +94,7 @@ function harness(source = productionSource) {
         'setGammaBrightnessThrottle', 'flushGammaBrightness', 'setTrackedGammaLevel',
         'releaseExtendedMinimumRamp', 'getExtendedMinimumLevel', 'isAtExtendedMinimumFloor',
         'minMax', 'usesGammaSlider', 'canUseGammaRamp', 'usesExtendedMinimum', 'getExtendedMinimumBreakpoint',
-        'sliderLevelToGammaLevel', 'gammaLevelToSliderLevel']
+        'sliderLevelToGammaLevel', 'gammaLevelToSliderLevel', 'usesGammaRamp', 'restoreGammaAfterReset']
     vm.runInContext(names.map(n => extractFunction(n, source)).join('\n'), c)
     const resume = source.indexOf('powerMonitor.on("resume",')
     vm.runInContext(source.slice(resume, source.indexOf('\nfunction handleMetricsChange', resume)), c)
