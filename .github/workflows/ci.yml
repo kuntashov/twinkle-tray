@@ -23,6 +23,11 @@ jobs:
           node-version: 24
           cache: 'npm'
           
+      - name: Prepare dependencies
+        run: npm ci
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Run regression tests
         shell: pwsh
         run: |
@@ -45,11 +50,6 @@ jobs:
         run: |
           $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
           "version=$version" >> $env:GITHUB_OUTPUT
-          
-      - name: Prepare dependencies
-        run: npm ci
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           
       - name: Build assets
         run: npm run parcel-build
