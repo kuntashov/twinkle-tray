@@ -1557,7 +1557,8 @@ function setTrackedGammaLevel(monitor, level, intent) {
   const gammaLevel = Math.round(minMax(level, GAMMA_BRIGHTNESS_MIN, 100))
   // Cache tracks requested levels; pending or rejected submissions must be reapplied.
   const previousSubmission = gammaBrightnessSubmissions.get(monitor.id)
-  if (monitor.gammaBrightness === gammaLevel && (!previousSubmission || previousSubmission.accepted)) return false
+  if (monitor.gammaBrightness === gammaLevel
+    && (!previousSubmission || (previousSubmission.accepted && previousSubmission.level === gammaLevel))) return false
 
   monitor.gammaBrightness = gammaLevel
   const submission = setGammaBrightnessThrottle(monitor.id, gammaLevel, intent)
@@ -3041,19 +3042,25 @@ function pauseMonitorUpdates() {
 let gammaBrightnessTimeout = false
 let gammaBrightnessQueue = {}
 const gammaBrightnessSubmissions = new Map()
-function setGammaBrightnessThrottle(id, level, intent) {
+const hardwareBrightnessSubmissions = new Map()
+function setGammaBrightnessThrottle(id, level, intent, immediate = false) {
   const update = { level, intent, accepted: false }
   gammaBrightnessSubmissions.set(id, update)
   if (!brightnessSubmissionIsCurrent(intent)) return false
   gammaBrightnessQueue[id]?.resolve?.(false)
+  delete gammaBrightnessQueue[id]
   const submission = new Promise(resolve => {
     update.resolve = sent => {
-      if (gammaBrightnessSubmissions.get(id) === update && brightnessIntentIsCurrent(intent)) update.accepted = sent !== false
+      if (gammaBrightnessSubmissions.get(id) === update && brightnessIntentIsCurrent(intent)) update.accepted = sent === true
       resolve(sent)
     }
   })
-  gammaBrightnessQueue[id] = update
-  if (!gammaBrightnessTimeout) flushGammaBrightness()
+  if (immediate) {
+    Promise.resolve(monitorsThread.send({ type: "gamma", brightness: level, id }, intent)).then(update.resolve, () => update.resolve(false))
+  } else {
+    gammaBrightnessQueue[id] = update
+    if (!gammaBrightnessTimeout) flushGammaBrightness()
+  }
   return intent ? submission : true
 }
 
@@ -3178,7 +3185,12 @@ function updateBrightness(index, newLevel, useCap = true, vcpValue = "brightness
     const submissions = []
     const send = data => {
       if (intent) intent.submitting = true
+      const hardware = data.type === "brightness" ? { level: data.brightness, accepted: false } : false
+      if (hardware) hardwareBrightnessSubmissions.set(monitor.id, hardware)
       const result = monitorsThread.send(data, intent)
+      if (hardware) Promise.resolve(result).then(sent => {
+        if (hardwareBrightnessSubmissions.get(monitor.id) === hardware && brightnessIntentIsCurrent(intent)) hardware.accepted = sent === true
+      }, () => {})
       submissions.push(result)
       return result
     }
@@ -3266,8 +3278,10 @@ function updateBrightness(index, newLevel, useCap = true, vcpValue = "brightness
     // Moving within the extended range leaves hardware where it already is.
     // A pinned floor may read back above the value written, so it's tracked
     // separately instead of compared.
-    const skipHardware = (extendedMinimum && (monitor.brightnessRaw === normalized
-      || (hardwareLevel <= 0 && extendedMinimumPinned.has(monitor.id))))
+    const previousHardware = extendedMinimum && hardwareBrightnessSubmissions.get(monitor.id)
+    const hardwareTarget = normalized * (monitor.type === "wmi" ? 1 : (monitor.brightnessMax || 100) / 100)
+    const skipHardware = (extendedMinimum && previousHardware?.accepted && previousHardware.level === hardwareTarget
+      && (monitor.brightnessRaw === normalized || (hardwareLevel <= 0 && extendedMinimumPinned.has(monitor.id))))
     if (extendedMinimum) {
       if (hardwareLevel <= 0) extendedMinimumPinned.add(monitor.id)
       else extendedMinimumPinned.delete(monitor.id)
@@ -3289,11 +3303,8 @@ function updateBrightness(index, newLevel, useCap = true, vcpValue = "brightness
       monitor.brightness = level
       monitor.brightnessRaw = gammaLevel
       monitor.gammaBrightness = gammaLevel
-      send({
-        type: "gamma",
-        brightness: gammaLevel,
-        id: monitor.id
-      })
+      if (intent) intent.submitting = true
+      submissions.push(setGammaBrightnessThrottle(monitor.id, gammaLevel, intent, true))
 
       // The ramp replaced this display's brightness control, but its other
       // DDC/CI features still follow the slider.
@@ -3389,15 +3400,17 @@ function updateBrightness(index, newLevel, useCap = true, vcpValue = "brightness
 
     setTrayPercent()
     updateKnownDisplays()
-    return submissions.length ? Promise.all(submissions).then(results => {
+    const finishSubmission = sent => {
       if (intent) intent.submitting = false
-      const sent = results.every(result => result !== false)
       if (sent && brightnessIntentIsCurrent(intent) && intent?.kind === "manual") {
         const manual = manualScheduleOverrides.get(monitor.id)
         if (manual) manual.submitted = true
       }
       return sent
-    }) : false
+    }
+    if (submissions.length) return Promise.all(submissions).then(results => finishSubmission(results.every(result => result !== false)))
+    const gamma = extendedMinimum && gammaBrightnessSubmissions.get(monitor.id)
+    return finishSubmission(!!(skipHardware && gamma?.accepted && gamma.level === monitor.gammaBrightness))
   } catch (e) {
     debug.error("Could not update brightness", e)
   }

@@ -72,7 +72,7 @@ function harness(source = productionSource) {
         waitForMonitorThreadReady: async () => {}, hasEnabledLinkedFeatures: () => false
     })
     Object.assign(c, {
-        gammaBrightnessQueue: {}, gammaBrightnessTimeout: false, gammaBrightnessSubmissions: new Map()
+        gammaBrightnessQueue: {}, gammaBrightnessTimeout: false, gammaBrightnessSubmissions: new Map(), hardwareBrightnessSubmissions: new Map()
     })
     for (const name of ['GAMMA_BRIGHTNESS_MIN', 'EXTENDED_MINIMUM_FLOOR_TOLERANCE',
         'EXTENDED_MINIMUM_BREAKPOINT_DEFAULT', 'EXTENDED_MINIMUM_BREAKPOINT_MAX']) {

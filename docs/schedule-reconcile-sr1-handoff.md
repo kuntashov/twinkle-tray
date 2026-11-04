@@ -47,8 +47,8 @@ CLI process, native worker or native test was run here.
 
 | Command | Final result |
 |---|---|
-| `node --test tests/schedule-reconcile.test.cjs tests/volume-values.test.cjs` | **59/59 PASS**, exit 0; ordinary isolated runner, narrow approved execution |
-| `node tests/schedule-reconcile.test.cjs` | **53/53 PASS**, exit 0; complete direct module load |
+| `node --test tests/schedule-reconcile.test.cjs tests/volume-values.test.cjs` | **62/62 PASS**, exit 0; ordinary isolated runner, narrow approved execution |
+| `node tests/schedule-reconcile.test.cjs` | **56/56 PASS**, exit 0; complete direct module load |
 | `node tests/volume-values.test.cjs` | **6/6 PASS**, exit 0; complete direct module load |
 | `node tests/schedule-negative-control.cjs --patched` | **1/1 PASS**, exit 0 |
 | `node --check src/electron.js` | exit 0 |
@@ -87,7 +87,7 @@ negative-control result.
   **1 assertion failure, exit 1**: expected `A55, B45`, actual `A55`. No missing
   new-helper/API exception occurs.
 - Current patched `src/electron.js` canonical Git-blob SHA-256:
-  `6e7bc3336de486e3ed2ba4cfce1f2684dc2ce82d0fae8be9559bdf3023864c23`.
+  `7311a8e825f0e30c129387f86cf923c6c8b3aeeb9647c5b61f2885e996f9e637`.
   The raw implementation checkout is LF and has the same digest. A CRLF
   checkout can have different bytes under `* text=auto`; compare normalized
   content or the Git blob. No source digest here is an ASAR/artifact digest.
@@ -131,7 +131,7 @@ distinctive phrases make the matching tests easy to find.
 | AC8 | `same-interval known restoration`, `full dates`, case-insensitive `UseTime`; actual SDR/gamma primary conversion |
 | AC9 | `manual brightness before first acceptance`, `temporarily unavailable manually corrected display`, `direct manual brightness ... off` |
 | AC10 | `profile changes`, `pause and idle guards`, `current visibility settings`, `pause enabled during a queued schedule send`; real read/send continuations and permitted restore reselection |
-| AC11 | `valid smooth transition` lasts 80 seconds with a pending peer and readiness expiry; equivalent recovery, callback cancellation, idle smooth peers and real resume tests |
+| AC11 | `valid smooth transition` lasts 80 seconds with a pending peer and readiness expiry; equivalent recovery, callback cancellation, idle smooth peers, accepted extended-target no-op completion and real resume tests |
 | AC12 | per-display delayed LERP, actual correlated read with linked overnight interpolation, partial readable IDs, failure and superseded read |
 | AC13 | `full dates, backwards time`, `before the first event today`, both pending-manual-before-first-event tests; date/month/settings identity, first-event arrival and no previous-day carry |
 | AC14 | actual read cleanup, readiness timeout/queue cleanup, worker-exit reverse completions, later normal retry; no permanent retry timer |
@@ -226,10 +226,47 @@ request and still-current intent can mark software acceptance; an older callback
 cannot confirm a newer request. Both real-queue regressions now submit gamma60 for
 the current intent. This adds no native acknowledgement protocol or physical claim.
 
-The current ordinary runner passes **59/59**, and direct loads pass **53/53 + 6/6**.
-The original-production negative control still fails specifically on missing B45
-with the expanded real-helper harness; the patched control passes. Independent final
-re-review and a build from the subsequently accepted source remain required.
+That correction snapshot, `d0a8e2dc467e03793f44fc1ce667700358b72a6b`, passed **59/59**
+in the ordinary runner and **53/53 + 6/6** by direct loads. The original-production
+negative control still failed specifically on missing B45 with the expanded
+real-helper harness; the patched control passed.
+
+### Accepted unchanged target completion found by final review
+
+The reviewer verified the previous gamma and empty-schedule cases, then found a
+completion gap for an already accepted extended-minimum target. After software
+accepted gamma60 + hardware0 for logical target30, a fresh raw inventory at the
+next same-valued interval reported hardware0/gamma60 with no reset. Avoiding another
+IPC was correct, but the empty submission list returned failure, left the interval
+unaccepted and kept readiness waiting until timeout.
+
+`an already software-accepted extended target completes a same-valued new interval
+without IPC` reproduced **RED: accepted target undefined instead of 30**. It now
+completes the interval without another IPC and releases the owner; a subsequent
+ordinary tick also produces neither duplicate IPC nor another pending owner.
+
+The correction separately tracks the latest hardware brightness software result at
+its exact wire level. Hardware deduplication requires that accepted component,
+alongside the existing cache/floor rules. Gamma deduplication additionally checks
+the exact accepted gamma level. Only an extended target whose relevant hardware
+and gamma components are already software accepted can complete as a no-op; an
+arbitrary empty submission list remains unsuccessful. Primary gamma retains its
+immediate-send behavior while participating in the same gamma submission tracking.
+All records are in-memory latest-request state per display, and older callbacks
+cannot confirm a replacement request.
+
+Countercases pass: `accepted gamma alone cannot complete or deduplicate a failed
+hardware floor` leaves partial failure unaccepted and retries the required hardware
+component; `primary gamma keeps immediate submission tracking and a failed different
+level is reapplied` records the rejected direct gamma80 and later submits the
+current gamma80. The two previous gamma regressions still require their actual
+gamma60 sends. Standalone volume/VCP behavior remains unchanged.
+
+The current ordinary runner passes **62/62**, and direct loads pass **56/56 + 6/6**.
+The original negative control still reports the concrete missing-B45 assertion,
+while the patched control passes. This is software completion evidence, without a
+new native acknowledgement protocol. Independent final re-review and a build from
+the subsequently accepted source remain required.
 
 ## Runtime handoff and limits
 

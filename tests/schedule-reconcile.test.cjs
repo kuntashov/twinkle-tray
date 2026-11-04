@@ -13,6 +13,93 @@ test('partial inventory retries the current evening target without rewriting its
     assert.deepEqual(h.messages.map(m => [m.id, Math.round(m.brightness)]), [['A', 55], ['B', 45]])
 })
 
+test('accepted gamma alone cannot complete or deduplicate a failed hardware floor', async () => {
+    const h = harness()
+    h.c.monitors.B.excluded = true
+    h.c.monitors.A.gammaBrightness = 100
+    h.c.settings.extendMinimumDisplays = { A: true }
+    h.c.settings.extendMinimumBreakpoints = { A: 60 }
+    h.c.settings.adjustmentTimes[2].monitors.A = 30
+    const send = h.c.monitorsThreadReal.send
+    let failHardware = true
+    let hardwareAttempts = 0
+    h.c.monitorsThreadReal.send = data => {
+        if (data.type === 'brightness') {
+            hardwareAttempts++
+            if (failHardware) throw new Error('fixture hardware floor failure')
+        }
+        send(data)
+    }
+    h.c.applyCurrentAdjustmentEvent()
+    await h.settle()
+    await h.advance(200)
+    assert.deepEqual(h.messages.map(m => [m.type, Math.round(m.brightness)]), [['gamma', 60]])
+    assert.equal(h.run('acceptedScheduleDisplays.size'), 0)
+    assert.equal(await h.c.updateBrightness('A', 30), false)
+    assert.notEqual(h.run('manualScheduleOverrides.get("A").submitted'), true)
+    assert.equal(hardwareAttempts, 2)
+    failHardware = false
+    assert.equal(await h.c.updateBrightness('A', 30), true)
+    assert.equal(h.run('manualScheduleOverrides.get("A").submitted'), true)
+    assert.deepEqual(h.messages.map(m => [m.type, Math.round(m.brightness)]), [['gamma', 60], ['brightness', 0]])
+})
+
+test('primary gamma keeps immediate submission tracking and a failed different level is reapplied', async () => {
+    const h = harness()
+    h.c.monitors.B.excluded = true
+    h.c.monitors.A.gammaBrightness = 100
+    h.c.settings.extendMinimumDisplays = { A: true }
+    h.c.settings.extendMinimumBreakpoints = { A: 60 }
+    h.c.settings.adjustmentTimes[2].monitors.A = 30
+    h.c.applyCurrentAdjustmentEvent()
+    await h.settle()
+    await h.advance(200)
+    h.c.settings.gammaAsMainSliderDisplays = { A: true }
+    const send = h.c.monitorsThreadReal.send
+    h.c.monitorsThreadReal.send = data => {
+        if (data.type === 'gamma' && data.brightness === 80) throw new Error('fixture primary gamma failure')
+        send(data)
+    }
+    assert.equal(await h.c.updateBrightness('A', 75), false)
+    assert.equal(h.run('gammaBrightnessSubmissions.get("A").level'), 80)
+    assert.equal(h.run('gammaBrightnessSubmissions.get("A").accepted'), false)
+    h.c.monitorsThreadReal.send = send
+    h.c.settings.gammaAsMainSliderDisplays = {}
+    assert.equal(await h.c.updateBrightness('A', 45), true)
+    assert.deepEqual(h.messages.map(m => [m.type, Math.round(m.brightness)]), [['gamma', 60], ['brightness', 0], ['gamma', 80]])
+    assert.equal(h.run('manualScheduleOverrides.get("A").submitted'), true)
+})
+
+test('an already software-accepted extended target completes a same-valued new interval without IPC', async () => {
+    const h = harness()
+    h.c.monitors.B.excluded = true
+    h.c.monitors.A.gammaBrightness = 100
+    h.c.settings.extendMinimumDisplays = { A: true }
+    h.c.settings.extendMinimumBreakpoints = { A: 60 }
+    h.c.settings.adjustmentTimes[2].monitors.A = 30
+    h.c.settings.adjustmentTimes[3].monitors.A = 30
+    h.c.applyCurrentAdjustmentEvent()
+    await h.settle()
+    await h.advance(200)
+    assert.deepEqual(h.messages.map(m => [m.type, Math.round(m.brightness)]), [['gamma', 60], ['brightness', 0]])
+    h.messages.length = 0
+    h.setTime(2026, 10, 4, 22, 1)
+    h.c.refreshMonitorsJob = async () => ({ monitors: {
+        A: { ...h.c.monitors.A, gammaBrightness: 60, brightness: 0, brightnessRaw: 0 },
+        B: { ...h.c.monitors.B }
+    } })
+    h.c.applyCurrentAdjustmentEvent()
+    await h.settle()
+    assert.deepEqual(h.messages, [])
+    assert.equal(h.run('acceptedScheduleDisplays.get("A")'), 30)
+    assert.equal(h.run('brightnessRecoveryPromise'), false)
+    await h.advance(6000)
+    h.c.applyCurrentAdjustmentEvent()
+    await h.settle()
+    assert.deepEqual(h.messages, [])
+    assert.equal(h.run('brightnessRecoveryPromise'), false)
+})
+
 test('a real gamma reset cannot let a rejected old-interval restore suppress the current ramp', async () => {
     const h = harness()
     h.c.monitors.B.excluded = true
