@@ -12,7 +12,7 @@ Ready now: SR-1. SR-2 may independently inspect Actions policy, credentials and 
 
 ## SR-1 — Reconcile current schedule and restoration through one brightness owner
 
-**State:** in implementation after accepted independent specification challenge. **Blocks:** SR-2 build/runtime acceptance. **Owner:** one implementation agent in its dedicated worktree. **Coverage:** AC1–AC14 and software/README portion of AC15.
+**State:** source implemented, independent Standards/Spec re-review READY at `4e04eaba8bd23134558e6f5c2101f7702bb9eaf0`, integrated through `55849a1`; ordinary integrated Node runner 54/54 PASS. **Unblocks:** SR-2 exact-commit build/runtime acceptance. **Owner:** one implementation agent in its dedicated worktree. **Coverage:** AC1–AC14 and software/README portion of AC15. Evidence: [review record](../../docs/verification/schedule-reconcile-review.md), [author handoff](../../docs/schedule-reconcile-sr1-handoff.md).
 
 ### User-visible result
 
@@ -48,7 +48,7 @@ Deliver commit SHA, branch/base, changed behavior, criterion-to-test mapping, te
 
 ## SR-2 — Produce and exercise the reviewed Windows artifact
 
-**State:** CI prerequisites independently reviewed; clean Windows preflight in progress. Build/runtime acceptance still blocked on reviewed SR-1 commit. Dedicated VM toolchain and runner preparation completed, actual packaged app tests pending. **Depends on:** SR-1 and resolved independent review. **Coverage:** packaged AC15, AC16–AC17, regression checks for AC1–AC14 on the fixed commit.
+**State:** ready for exact reviewed integration-commit build. Baseline Windows preflight succeeded; dedicated VM toolchain and baseline native runtime executed separately. Patched packaged tests and fresh final integration review pending. **Depends on:** SR-1 and resolved independent review (satisfied). **Coverage:** packaged AC15, AC16–AC17, regression checks for AC1–AC14 on the fixed commit.
 
 ### Deliverable
 
