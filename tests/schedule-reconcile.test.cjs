@@ -13,6 +13,52 @@ test('partial inventory retries the current evening target without rewriting its
     assert.deepEqual(h.messages.map(m => [m.id, Math.round(m.brightness)]), [['A', 55], ['B', 45]])
 })
 
+test('transport failure after pause-driven restore selection waits without a busy retry', async () => {
+    const h = harness()
+    h.c.monitors.B.excluded = true
+    h.c.refreshMonitorsJob = async () => {
+        h.c.activeCapabilitiesEnrichmentPromise = new Promise(() => {})
+        return { monitors: h.c.monitors }
+    }
+    h.c.setKnownBrightness()
+    await h.settle()
+    h.c.tempSettings.pauseTimeAdjustments = true
+    h.c.activeCapabilitiesEnrichmentPromise = false
+    h.c.refreshMonitorsJob = async () => ({ monitors: h.c.monitors })
+    let attempts = 0
+    h.c.monitorsThreadReal.send = () => { attempts++; throw new Error('fixture restore transport failure') }
+    await h.run('flushQueuedMonitorCommands()')
+    await h.settle()
+    assert.equal(attempts, 1)
+    assert.equal(h.messages.length, 0)
+    assert.equal(h.run('acceptedScheduleDisplays.size'), 0)
+    await h.advance(30000)
+    assert.equal(attempts, 1)
+    assert.equal(h.run('brightnessRecoveryPromise'), false)
+    assert.equal(h.run('queuedMonitorCommands.length'), 0)
+})
+
+test('pause enabled during a queued schedule send reselects permitted known restore without a new trigger', async () => {
+    const h = harness()
+    h.c.monitors.B.excluded = true
+    h.c.refreshMonitorsJob = async () => {
+        h.c.activeCapabilitiesEnrichmentPromise = new Promise(() => {})
+        return { monitors: h.c.monitors }
+    }
+    h.c.setKnownBrightness()
+    await h.settle()
+    assert.equal(h.run('queuedMonitorCommands.length'), 1)
+    h.c.tempSettings.pauseTimeAdjustments = true
+    h.c.activeCapabilitiesEnrichmentPromise = false
+    h.c.refreshMonitorsJob = async () => ({ monitors: h.c.monitors })
+    await h.run('flushQueuedMonitorCommands()')
+    await h.settle()
+    assert.deepEqual(h.messages.map(m => [m.id, Math.round(m.brightness)]), [['A', 75]])
+    assert.equal(h.run('acceptedScheduleDisplays.size'), 0)
+    assert.equal(h.run('brightnessRecoveryPromise'), false)
+    assert.equal(h.run('queuedMonitorCommands.length'), 0)
+})
+
 test('explicit startup brightness remains enabled independently of lifecycle auto-apply settings', async () => {
     const h = harness()
     h.c.monitors.B.excluded = true

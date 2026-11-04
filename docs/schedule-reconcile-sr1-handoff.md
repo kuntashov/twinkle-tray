@@ -47,8 +47,8 @@ CLI process, native worker or native test was run here.
 
 | Command | Final result |
 |---|---|
-| `node --test tests/schedule-reconcile.test.cjs tests/volume-values.test.cjs` | **52/52 PASS**, exit 0; ordinary isolated runner, narrow approved execution |
-| `node tests/schedule-reconcile.test.cjs` | **46/46 PASS**, exit 0; complete direct module load |
+| `node --test tests/schedule-reconcile.test.cjs tests/volume-values.test.cjs` | **54/54 PASS**, exit 0; ordinary isolated runner, narrow approved execution |
+| `node tests/schedule-reconcile.test.cjs` | **48/48 PASS**, exit 0; complete direct module load |
 | `node tests/volume-values.test.cjs` | **6/6 PASS**, exit 0; complete direct module load |
 | `node tests/schedule-negative-control.cjs --patched` | **1/1 PASS**, exit 0 |
 | `node --check src/electron.js` | exit 0 |
@@ -87,7 +87,7 @@ negative-control result.
   **1 assertion failure, exit 1**: expected `A55, B45`, actual `A55`. No missing
   new-helper/API exception occurs.
 - Current patched `src/electron.js` canonical Git-blob SHA-256:
-  `d44aa87f1220e16c7bbc36cb80982cee04ffa2bc812b0fef72d0adfec1c2f871`.
+  `6f438a38d18078238c0a1a49e8b405f647ff2acd9d30ec06511c24777d28139e`.
   The raw implementation checkout is LF and has the same digest. A CRLF
   checkout can have different bytes under `* text=auto`; compare normalized
   content or the Git blob. No source digest here is an ASAR/artifact digest.
@@ -130,7 +130,7 @@ distinctive phrases make the matching tests easy to find.
 | AC7 | actual resume/unlock/metrics/hardware/idle callbacks; `late saved known brightness`, `delayed idle return` |
 | AC8 | `same-interval known restoration`, `full dates`, case-insensitive `UseTime`; actual SDR/gamma primary conversion |
 | AC9 | `manual brightness before first acceptance`, `temporarily unavailable manually corrected display`, `direct manual brightness ... off` |
-| AC10 | `profile changes`, `pause and idle guards`, `current visibility settings`; real read and send continuations |
+| AC10 | `profile changes`, `pause and idle guards`, `current visibility settings`, `pause enabled during a queued schedule send`; real read/send continuations and permitted restore reselection |
 | AC11 | `valid smooth transition` lasts 80 seconds with a pending peer and readiness expiry; equivalent recovery, callback cancellation, idle smooth peers and real resume tests |
 | AC12 | per-display delayed LERP, actual correlated read with linked overnight interpolation, partial readable IDs, failure and superseded read |
 | AC13 | `full dates, backwards time`, `before the first event today`; date/month boundaries and no previous-day carry |
@@ -154,8 +154,31 @@ submitted for both axes to review again; this author does not approve them.
 | `explicit startup brightness remains enabled independently` | brightnessAtStartup=true/checkTimeAtStartup=false/disableAutoApply=true yielded no A75 | Only the explicit startup request carries startup-restore authority through the owner and submission guard. A75 restores; later lifecycle known restore remains disabled, and active profiles remain protected. |
 
 The four tests were added in separate focused RED/GREEN slices on real production
-paths. The final ordinary runner passes 52/52; direct loads pass 46/46 + 6/6.
-Production changes in this revision are limited to these guard and wake paths.
+paths. That correction snapshot, `261bae5ab04910be9cfea722e3a47ca9385e2732`, passed
+52/52 in the ordinary runner and 46/46 + 6/6 by direct loads. Its production changes
+were limited to these guard and wake paths.
+
+### Remaining Spec finding after re-review
+
+Standards accepted both original findings as closed on `261bae5`; Spec reproduced
+the original corrections but retained a P2 policy-selection defect. A known-restore
+request first selected schedule A55, then awaited its real transport queue. If time
+adjustments were paused before flush, the stale schedule was dropped but the owner
+slept instead of selecting permitted known A75. That snapshot was not approved.
+
+`pause enabled during a queued schedule send reselects permitted known restore
+without a new trigger` reproduced **RED: no messages instead of A75**. The correction
+reselects only when a rejected schedule submission now has pause enabled and restore
+is permitted. It reuses the inventory already completed by the same owner for this
+policy change; new/full requests still refresh normally. It does not treat an
+arbitrary cached refresh as completion or add a polling/retry loop.
+
+The test now sends A75 once, leaves schedule acceptance empty and releases the owner.
+`transport failure after pause-driven restore selection waits without a busy retry`
+also passes: exactly one restore IPC attempt fails, then the owner waits for an event
+or the existing bounded deadline; no further attempt occurs before timeout cleanup.
+The current ordinary runner passes **54/54**, and direct loads pass **48/48 + 6/6**.
+This correction awaits independent Spec re-review; no author approval is asserted.
 
 ## Runtime handoff and limits
 
