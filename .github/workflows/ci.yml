@@ -1,6 +1,9 @@
 name: CI Build
 
-on: [push, pull_request]
+on: [push, pull_request, workflow_dispatch]
+
+permissions:
+  contents: read
 
 env:
  BRANCH_NAME: ${{ github.head_ref || github.ref_name }} 
@@ -20,12 +23,31 @@ jobs:
           node-version: 24
           cache: 'npm'
           
-      - name: Get package.json info
+      - name: Run regression tests
+        shell: pwsh
+        run: |
+          $testFiles = @(Get-ChildItem tests -File -Filter '*.test.cjs' | Sort-Object Name | ForEach-Object FullName)
+          if ($testFiles.Count -eq 0) { throw 'No regression tests found.' }
+          node --test --test-reporter=tap @testFiles | Tee-Object -FilePath test-results.tap
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - uses: actions/upload-artifact@v7
+        name: Upload regression test results
+        if: always()
+        with:
+          name: twinkle-tray-tests-${{ github.sha }}
+          path: test-results.tap
+          if-no-files-found: error
+
+      - name: Read package version
         id: info
-        uses: jaywcjlove/github-action-package@main
+        shell: pwsh
+        run: |
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          "version=$version" >> $env:GITHUB_OUTPUT
           
       - name: Prepare dependencies
-        run: npm i
+        run: npm ci
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           
@@ -39,11 +61,25 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           
+      - name: Build x64 portable ZIP
+        run: npm exec electron-builder -- --x64 --win zip --config.npmRebuild=false --config.extraMetadata.name=twinkle-tray-portable --config.extraMetadata.versionBuild="${{ steps.info.outputs.version }}+${{ github.sha }}" --config.win.artifactName="Twinkle.Tray.v${{ steps.info.outputs.version }}-portable.zip" --publish="never"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Record Windows artifact provenance and checksums
+        shell: pwsh
+        run: ./.github/scripts/write-build-manifest.ps1 -Version '${{ steps.info.outputs.version }}' -Commit '${{ github.sha }}' -RunUrl '${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}'
+
       - uses: actions/upload-artifact@v7
-        name: Upload Win32 installer
+        name: Upload Windows x64 build
         with:
-          name: twinkle-tray-exe-${{ steps.info.outputs.version }}-${{ github.sha }}
-          path: dist/*.exe
+          name: twinkle-tray-windows-x64-${{ steps.info.outputs.version }}-${{ github.sha }}
+          path: |
+            dist/*.exe
+            dist/*-portable.zip
+            dist/build-manifest.json
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
 
       - name: Get current date
         id: date
