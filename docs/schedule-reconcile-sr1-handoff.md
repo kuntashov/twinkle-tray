@@ -31,6 +31,9 @@ This is an author handoff for independent standards/spec review, not approval.
   normal lifecycle recovery preserves it. Cold startup remains controlled by
   `brightnessAtStartup` and `checkTimeAtStartup`; startup suppression does not
   prevent a later lifecycle request, explicit request or new event.
+- Pausing schedule adjustments permits existing known restoration; the profile
+  guard remains independent. Explicit startup restoration follows
+  `brightnessAtStartup` even when lifecycle auto-apply is disabled.
 
 Production changes are confined to `src/electron.js` and README's existing CLI
 documentation. There is no new runtime helper and no packaging file-list change.
@@ -44,8 +47,8 @@ CLI process, native worker or native test was run here.
 
 | Command | Final result |
 |---|---|
-| `node --test tests/schedule-reconcile.test.cjs tests/volume-values.test.cjs` | **48/48 PASS**, exit 0; ordinary isolated runner, narrow approved execution |
-| `node tests/schedule-reconcile.test.cjs` | **42/42 PASS**, exit 0; complete direct module load |
+| `node --test tests/schedule-reconcile.test.cjs tests/volume-values.test.cjs` | **52/52 PASS**, exit 0; ordinary isolated runner, narrow approved execution |
+| `node tests/schedule-reconcile.test.cjs` | **46/46 PASS**, exit 0; complete direct module load |
 | `node tests/volume-values.test.cjs` | **6/6 PASS**, exit 0; complete direct module load |
 | `node tests/schedule-negative-control.cjs --patched` | **1/1 PASS**, exit 0 |
 | `node --check src/electron.js` | exit 0 |
@@ -83,8 +86,11 @@ negative-control result.
   `707d90e2f76ebb08d3ab477571dfa791726399de239511d0d610addc3aab7d4b`.
   **1 assertion failure, exit 1**: expected `A55, B45`, actual `A55`. No missing
   new-helper/API exception occurs.
-- Patched `src/electron.js` SHA-256:
-  `d07c7c5324529ee85670b757cea74f620dbc28a0d2e033f3f6ee94c014b5b699`.
+- Current patched `src/electron.js` canonical Git-blob SHA-256:
+  `d44aa87f1220e16c7bbc36cb80982cee04ffa2bc812b0fef72d0adfec1c2f871`.
+  The raw implementation checkout is LF and has the same digest. A CRLF
+  checkout can have different bytes under `* text=auto`; compare normalized
+  content or the Git blob. No source digest here is an ASAR/artifact digest.
   **1 PASS, exit 0**: exactly `A55, B45`, with no duplicate A write.
 
 Implementation proceeded in focused vertical RED/GREEN slices. Observed REDs
@@ -131,6 +137,26 @@ distinctive phrases make the matching tests easy to find.
 | AC14 | actual read cleanup, readiness timeout/queue cleanup, worker-exit reverse completions, later normal retry; no permanent retry timer |
 | AC15 software | actual `handleCommandLine`, actual startup settings block/background scheduling, later lock/unlock after startup-off; README |
 
+## Author corrections after the first independent review
+
+The first reviewed snapshot was `dd31c0c6c75b2742f880e62afcfe500294f74689`.
+Standards reported two P2 findings and Spec reported three, with the pause defect
+appearing on both axes: four distinct defects. That snapshot was not approved.
+The orchestrator maintains the independent report under
+`docs/verification/schedule-reconcile-review.md`. The following corrections are
+submitted for both axes to review again; this author does not approve them.
+
+| Finding / new regression test | Observed RED | Submitted correction / GREEN |
+|---|---|---|
+| `paused time adjustments still permit known restoration` | pause + empty schedule yielded no A75 | Schedule selection observes pause; permitted restore does not inherit the schedule pause. Empty, nonanimated and animated configurations restore A75 without accepting a schedule; active profiles remain protected. |
+| `manual queued before Windows idle` | queued A70 was sent after Windows idle became true | Actual submission checks Windows idle for brightness-intent work. A70 is retained for later recovery, the off-state brightness submission is dropped, and standalone queued volume25 still executes. |
+| `inventory readiness arriving during an awaited peer send` | real B-ready commit during A's queued send was lost; only A55 sent | A remembered wake version prevents sleeping after an unconsumed event. Already processed refresh events are consumed; the current inventory is revisited and B45 sends once. No polling was added. |
+| `explicit startup brightness remains enabled independently` | brightnessAtStartup=true/checkTimeAtStartup=false/disableAutoApply=true yielded no A75 | Only the explicit startup request carries startup-restore authority through the owner and submission guard. A75 restores; later lifecycle known restore remains disabled, and active profiles remain protected. |
+
+The four tests were added in separate focused RED/GREEN slices on real production
+paths. The final ordinary runner passes 52/52; direct loads pass 46/46 + 6/6.
+Production changes in this revision are limited to these guard and wake paths.
+
 ## Runtime handoff and limits
 
 The harness extracts declarations without rewriting their algorithms. Its seams
@@ -145,6 +171,12 @@ SR-2 must separately establish packaged startup, actual second-process delivery,
 Windows build/packaging and session/power events on the dedicated VM. This author
 does not mark those runtime gates passed. Physical DDC/CI and WMI remain deferred;
 software transport acceptance is not native acknowledgement or physical success.
+
+The VM owner reported an existing baseline limitation: a cold start during native
+idle presence 2 can skip worker startup, and returning to active presence 0 did
+not start that worker; a fresh active launch did. This revision does not change
+`startMonitorThread` startup policy. Startup-off assertions concern the initial
+phase; later idle return or other lifecycle recovery may apply the schedule.
 
 For VM observability, existing `settings.json` field `logging: true` enables the
 normal session log under `<configFilesDir>/logs/session-*.log`. Non-portable config

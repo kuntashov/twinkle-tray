@@ -1751,11 +1751,11 @@ function getKnownDisplays(useCurrentMonitors) {
 }
 
 // Look up all known displays and re-apply last brightness
-function setKnownBrightness(useCurrentMonitors = false, useTransition = false, transitionSpeed = 1, allowSchedule = true) {
-  if (settings.disableAutoApply || currentProfile?.setBrightness) return false
+function setKnownBrightness(useCurrentMonitors = false, useTransition = false, transitionSpeed = 1, allowSchedule = true, startupRestore = false) {
+  if ((settings.disableAutoApply && !startupRestore) || currentProfile?.setBrightness) return false
   return reconcileBrightness(!useTransition, {
     restore: true, known: getKnownDisplays(useCurrentMonitors),
-    speed: transitionSpeed, allowSchedule, bypassRateLimit: true
+    speed: transitionSpeed, allowSchedule, startupRestore, bypassRateLimit: true
   })
 }
 
@@ -4590,7 +4590,7 @@ app.on("ready", async () => {
 
     // Suppress only this startup interval; future schedule events still apply.
     startupScheduleIdentity = currentScheduleIdentity()
-    if (settings.brightnessAtStartup) setKnownBrightness(false, false, 1, false);
+    if (settings.brightnessAtStartup) setKnownBrightness(false, false, 1, false, true);
     if (settings.checkTimeAtStartup) {
       startupScheduleIdentity = false;
       setTimeout(() => handleBackgroundUpdate(true), 3500)
@@ -5683,6 +5683,7 @@ function newBrightnessIntent(id, kind, target) {
 }
 
 function brightnessSubmissionIsCurrent(intent) {
+  if (intent && isWindowsUserIdle) return false
   const valid = brightnessIntentIsCurrent(intent)
   if (!valid && intent && brightnessIntents.get(intent.id) === intent
     && (intent.kind !== "manual" || intent.intervalBound) && intent.interval !== currentScheduleIdentity()) {
@@ -5701,9 +5702,9 @@ function brightnessIntentIsCurrent(intent) {
   if (intent.kind === "manual") return !intent.intervalBound || intent.interval === currentScheduleIdentity()
   if (intent.kind === "profile") return true
   return intent.interval === currentScheduleIdentity()
-    && !tempSettings.pauseTimeAdjustments && !currentProfile?.setBrightness
+    && (intent.kind === "restore" || !tempSettings.pauseTimeAdjustments) && !currentProfile?.setBrightness
     && !userIdleDimmed && !isWindowsUserIdle
-    && (intent.kind !== "restore" || !settings.disableAutoApply)
+    && (intent.kind !== "restore" || !settings.disableAutoApply || intent.startupRestore)
 }
 let brightnessRecoveryPromise = false
 let brightnessRecoveryRequested = false
@@ -5742,6 +5743,7 @@ function reconcileBrightness(instant = true, options = {}) {
       brightnessRecoverySession.preIdle = !!options.preIdle
     }
     if (options.fullRefresh) brightnessRecoverySession.fullRefresh = true
+    if (options.startupRestore) brightnessRecoverySession.startupRestore = true
     if (options.bypassWindowsIdle) brightnessRecoverySession.bypassWindowsIdle = true
     if (options.bypassRateLimit) brightnessRecoverySession.bypassRateLimit = true
     if (options.allowSchedule !== false) brightnessRecoverySession.allowSchedule = true
@@ -5750,9 +5752,11 @@ function reconcileBrightness(instant = true, options = {}) {
   if (brightnessRecoveryPromise) return brightnessRecoveryPromise
   const session = {
     controller: new AbortController(), fullRefresh: !!options.fullRefresh, bypassWindowsIdle: !!options.bypassWindowsIdle,
-    preIdle: !!options.preIdle, cancelled: false, completed: completedMonitorInventory, wake: () => {}, restore: !!options.restore,
+    startupRestore: !!options.startupRestore,
+    preIdle: !!options.preIdle, cancelled: false, completed: completedMonitorInventory, wake: () => {}, wakeVersion: 0, restore: !!options.restore,
     bypassRateLimit: !!options.bypassRateLimit, known: options.known || {}, restored: new Map(), allowSchedule: options.allowSchedule !== false
   }
+  const canRestore = () => session.restore && (!settings.disableAutoApply || session.startupRestore)
   brightnessRecoverySession = session
   let cancel
   const cancelled = new Promise(resolve => { cancel = resolve })
@@ -5772,13 +5776,17 @@ function reconcileBrightness(instant = true, options = {}) {
   const thread = monitorsThreadReal
   thread?.once("exit", finish)
   thread?.once("error", finish)
-  const wake = () => session.wake()
+  const wake = () => {
+    session.wakeVersion++
+    session.wake()
+  }
   monitorsEventEmitter.on("ready", wake)
   monitorsEventEmitter.on("brightness-inventory", wake)
   monitorsEventEmitter.on("brightness-unpaused", wake)
   brightnessRecoveryPromise = (async () => {
     while (!session.cancelled) {
       brightnessRecoveryRequested = false
+      let wakeVersion = session.wakeVersion
       const beforeWait = new Map(brightnessIntents)
       const bypassRateLimit = session.bypassRateLimit || currentScheduleIdentity() !== scheduleIdentity
       session.bypassRateLimit = false
@@ -5788,10 +5796,12 @@ function reconcileBrightness(instant = true, options = {}) {
       if (session.cancelled) break
       let pending = Object.keys(monitors).length === 0
       if (completedMonitorInventory !== session.completed && monitorsThreadReady
-        && !tempSettings.pauseTimeAdjustments && !currentProfile?.setBrightness && !userIdleDimmed && !isWindowsUserIdle) {
+        && (!tempSettings.pauseTimeAdjustments || canRestore())
+        && !currentProfile?.setBrightness && !userIdleDimmed && !isWindowsUserIdle) {
         session.completed = completedMonitorInventory
+        wakeVersion = session.wakeVersion
         let readable = false
-        if (settings.adjustmentTimeAnimate && session.allowSchedule) {
+        if (settings.adjustmentTimeAnimate && session.allowSchedule && !tempSettings.pauseTimeAdjustments) {
           try {
             const known = await Promise.race([readKnownBrightnessJob(`${Date.now()}-${Math.random()}`, session.controller.signal), cancelled])
             if (session.cancelled || !known) break
@@ -5813,9 +5823,10 @@ function reconcileBrightness(instant = true, options = {}) {
             break
           }
         }
-        if (tempSettings.pauseTimeAdjustments || currentProfile?.setBrightness || userIdleDimmed || isWindowsUserIdle) break
+        if ((tempSettings.pauseTimeAdjustments && !canRestore())
+          || currentProfile?.setBrightness || userIdleDimmed || isWindowsUserIdle) break
         const identity = syncScheduleIdentity()
-        const event = session.allowSchedule ? getCurrentAdjustmentEvent() : false
+        const event = session.allowSchedule && !tempSettings.pauseTimeAdjustments ? getCurrentAdjustmentEvent() : false
         if (event && settings.adjustmentTimeAnimate) {
           const interpolated = getCurrentAdjustmentEventLERP()
           if (typeof interpolated === "number") event.brightness = interpolated
@@ -5839,7 +5850,7 @@ function reconcileBrightness(instant = true, options = {}) {
           if (event && !manual && !accepted) {
             target = settings.adjustmentTimeIndividualDisplays && event.monitors[monitor.id] >= 0 ? event.monitors[monitor.id] : event.brightness
           } else {
-            if ((!session.restore || settings.disableAutoApply) && (!manual || manual.submitted)) continue
+            if (!canRestore() && (!manual || manual.submitted)) continue
             const known = Object.values(session.known).find(m => m?.id === monitor.id)
             target = manual ? manual.target : (session.preIdle ? known?.brightness : acceptedScheduleDisplays.get(monitor.id)) ?? known?.brightness
             kind = "restore"
@@ -5852,6 +5863,7 @@ function reconcileBrightness(instant = true, options = {}) {
           }
           if (settings.adjustmentTimeAnimate && Math.round(monitor.brightness) === Math.round(target)) continue
           const intent = newBrightnessIntent(monitor.id, kind, target)
+          if (kind === "restore") intent.startupRestore = session.startupRestore
           const accept = sent => {
             if (!sent || !brightnessIntentIsCurrent(intent)) return
             if (kind === "schedule") acceptedScheduleDisplays.set(monitor.id, target)
@@ -5872,8 +5884,10 @@ function reconcileBrightness(instant = true, options = {}) {
       } else {
         pending = true
       }
-      if (tempSettings.pauseTimeAdjustments || currentProfile?.setBrightness || userIdleDimmed || isWindowsUserIdle) break
-      if (brightnessRecoveryRequested) continue
+      if ((tempSettings.pauseTimeAdjustments && !canRestore())
+        || currentProfile?.setBrightness || userIdleDimmed || isWindowsUserIdle) break
+      // A readiness event may arrive while a read or submission owns this continuation.
+      if (brightnessRecoveryRequested || session.wakeVersion !== wakeVersion) continue
       if (!pending || session.cancelled) break
       if (!session.waitLogged) {
         console.log("Brightness reconciliation: waiting for usable monitors")

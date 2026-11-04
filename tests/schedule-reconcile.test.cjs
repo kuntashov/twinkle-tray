@@ -13,6 +13,88 @@ test('partial inventory retries the current evening target without rewriting its
     assert.deepEqual(h.messages.map(m => [m.id, Math.round(m.brightness)]), [['A', 55], ['B', 45]])
 })
 
+test('explicit startup brightness remains enabled independently of lifecycle auto-apply settings', async () => {
+    const h = harness()
+    h.c.monitors.B.excluded = true
+    Object.assign(h.c.settings, { brightnessAtStartup: true, checkTimeAtStartup: false, disableAutoApply: true })
+    h.startup()
+    await h.advance(4000)
+    assert.deepEqual(h.messages.map(m => [m.id, Math.round(m.brightness)]), [['A', 75]])
+    assert.equal(h.run('acceptedScheduleDisplays.size'), 0)
+    h.messages.length = 0
+    h.c.settings.adjustmentTimes = []
+    h.c.setKnownBrightness()
+    h.c.handleMonitorChange('display-added')
+    await h.advance(5000)
+    assert.equal(h.messages.length, 0)
+    const profile = harness()
+    profile.c.monitors.B.excluded = true
+    Object.assign(profile.c.settings, { brightnessAtStartup: true, checkTimeAtStartup: false, disableAutoApply: true })
+    profile.c.currentProfile = { setBrightness: true }
+    profile.startup()
+    await profile.advance(4000)
+    assert.equal(profile.messages.length, 0)
+})
+
+test('inventory readiness arriving during an awaited peer send is remembered before the owner sleeps', async () => {
+    const h = harness()
+    h.c.refreshMonitorsJob = async () => {
+        h.c.activeCapabilitiesEnrichmentPromise = new Promise(() => {})
+        return { monitors: h.c.monitors }
+    }
+    h.c.applyCurrentAdjustmentEvent()
+    await h.settle()
+    assert.equal(h.run('queuedMonitorCommands.length'), 1)
+    h.c.commitRefreshedMonitors({ A: { ...h.c.monitors.A }, B: { ...h.c.monitors.B, type: 'ddcci' } })
+    h.c.activeCapabilitiesEnrichmentPromise = false
+    h.c.refreshMonitorsJob = async () => ({ monitors: h.c.monitors })
+    await h.run('flushQueuedMonitorCommands()')
+    await h.settle()
+    assert.deepEqual(h.messages.map(m => [m.id, Math.round(m.brightness)]), [['A', 55], ['B', 45]])
+    assert.equal(h.run('brightnessRecoveryPromise'), false)
+})
+
+test('manual queued before Windows idle is not submitted while off and its target survives recovery', async () => {
+    const h = harness()
+    h.c.monitors.B.excluded = true
+    h.c.isRefreshing = true
+    h.c.updateBrightness('A', 70)
+    h.c.updateBrightnessThrottle('A', 25, false, true, 'volume-raw')
+    h.c.isWindowsUserIdle = true
+    h.c.isRefreshing = false
+    await h.run('flushQueuedMonitorCommands()')
+    await h.settle()
+    assert.deepEqual(h.messages.map(m => [m.type, m.value]), [['vcp', 25]])
+    assert.equal(h.run('manualScheduleOverrides.get("A").target'), 70)
+    assert.notEqual(h.run('manualScheduleOverrides.get("A").submitted'), true)
+    assert.equal(h.run('queuedMonitorCommands.length'), 0)
+    h.c.isWindowsUserIdle = false
+    h.c.setKnownBrightness()
+    await h.settle()
+    assert.deepEqual(h.messages.filter(m => m.type === 'brightness').map(m => [m.id, Math.round(m.brightness)]), [['A', 70]])
+    assert.equal(h.run('acceptedScheduleDisplays.has("A")'), false)
+})
+
+test('paused time adjustments still permit known restoration while an active profile remains protected', async () => {
+    for (const mode of ['empty', 'instant', 'animated']) {
+        const h = harness()
+        if (mode === 'empty') h.c.settings.adjustmentTimes = []
+        h.c.settings.adjustmentTimeAnimate = mode === 'animated'
+        h.c.readKnownBrightnessJob = async () => { throw new Error('paused schedules must not read an animated target') }
+        h.c.monitors.B.excluded = true
+        h.c.tempSettings.pauseTimeAdjustments = true
+        h.c.setKnownBrightness()
+        await h.settle()
+        assert.deepEqual(h.messages.map(m => [m.id, Math.round(m.brightness)]), [['A', 75]])
+        assert.equal(h.run('acceptedScheduleDisplays.size'), 0)
+        assert.equal(h.run('brightnessRecoveryPromise'), false)
+        h.c.currentProfile = { setBrightness: true }
+        h.c.setKnownBrightness()
+        await h.settle()
+        assert.equal(h.messages.length, 1)
+    }
+})
+
 test('SDR and gamma primary sliders retain manual ownership through the real mode conversion', async () => {
     for (const mode of ['sdr', 'gamma']) {
         const h = harness()
