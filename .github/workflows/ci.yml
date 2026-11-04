@@ -38,11 +38,11 @@ jobs:
 
       - uses: actions/upload-artifact@v7
         name: Upload regression test results
-        if: always()
+        if: ${{ always() && hashFiles('test-results.tap') != '' }}
         with:
           name: twinkle-tray-tests-${{ github.sha }}
           path: test-results.tap
-          if-no-files-found: error
+          if-no-files-found: warn
 
       - name: Read package version
         id: info
