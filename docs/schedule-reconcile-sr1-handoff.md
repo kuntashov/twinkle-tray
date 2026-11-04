@@ -47,8 +47,8 @@ CLI process, native worker or native test was run here.
 
 | Command | Final result |
 |---|---|
-| `node --test tests/schedule-reconcile.test.cjs tests/volume-values.test.cjs` | **62/62 PASS**, exit 0; ordinary isolated runner, narrow approved execution |
-| `node tests/schedule-reconcile.test.cjs` | **56/56 PASS**, exit 0; complete direct module load |
+| `node --test tests/schedule-reconcile.test.cjs tests/volume-values.test.cjs` | **64/64 PASS**, exit 0; ordinary isolated runner, narrow approved execution |
+| `node tests/schedule-reconcile.test.cjs` | **58/58 PASS**, exit 0; complete direct module load |
 | `node tests/volume-values.test.cjs` | **6/6 PASS**, exit 0; complete direct module load |
 | `node tests/schedule-negative-control.cjs --patched` | **1/1 PASS**, exit 0 |
 | `node --check src/electron.js` | exit 0 |
@@ -87,7 +87,7 @@ negative-control result.
   **1 assertion failure, exit 1**: expected `A55, B45`, actual `A55`. No missing
   new-helper/API exception occurs.
 - Current patched `src/electron.js` canonical Git-blob SHA-256:
-  `7311a8e825f0e30c129387f86cf923c6c8b3aeeb9647c5b61f2885e996f9e637`.
+  `e8b14f873a0c70f45ad15c689f94cb64462ebb4536ac1cbd613cbf0d9a2c59d0`.
   The raw implementation checkout is LF and has the same digest. A CRLF
   checkout can have different bytes under `* text=auto`; compare normalized
   content or the Git blob. No source digest here is an ASAR/artifact digest.
@@ -262,11 +262,34 @@ level is reapplied` records the rejected direct gamma80 and later submits the
 current gamma80. The two previous gamma regressions still require their actual
 gamma60 sends. Standalone volume/VCP behavior remains unchanged.
 
-The current ordinary runner passes **62/62**, and direct loads pass **56/56 + 6/6**.
-The original negative control still reports the concrete missing-B45 assertion,
-while the patched control passes. This is software completion evidence, without a
-new native acknowledgement protocol. Independent final re-review and a build from
-the subsequently accepted source remain required.
+That correction snapshot, `39113a89542fb34f3b61f1224b66f64eccce6763`, passed **62/62**
+in the ordinary runner and **56/56 + 6/6** by direct loads. The original negative
+control still reported the concrete missing-B45 assertion, while the patched
+control passed. This was software completion evidence without a new native
+acknowledgement protocol.
+
+### Owned gamma with no prior submission record
+
+Re-review found that the no-record branch still skipped gamma submission while
+completion required an accepted gamma record. Two independently registered real-path
+regressions reproduced RED: above-breakpoint target70/raw25/gamma100 sent only
+hardware25, and initially dimmed target30/raw0/gamma60 sent only hardware0. Neither
+created the gamma record needed to complete a later same-valued interval.
+
+The minimal condition change retains no-record cache deduplication for unowned
+gamma work, but an owned target submits its exact gamma level once. The existing
+confirmed exact-level deduplication then completes later equivalent targets without
+another IPC. The gamma100 and gamma60 tests both check the initial owned gamma
+submission/accepted record, a fresh-raw same-valued new interval with no IPC and a
+released owner, and a stable subsequent ordinary tick. They also verify that the
+unowned same-cache/no-record request still performs no IPC. Pending/rejected,
+failed-floor, direct-primary-gamma and reset countercases remain passing.
+
+The current ordinary runner passes **64/64**, and direct loads pass **58/58 + 6/6**.
+The patched negative control and syntax/diff checks pass. Independent final
+re-review and a build from the subsequently accepted source remain required;
+neither software completion nor the one-time gamma submission claims native ACK
+or physical DDC/WMI success.
 
 ## Runtime handoff and limits
 

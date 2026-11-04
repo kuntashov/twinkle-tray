@@ -1558,7 +1558,7 @@ function setTrackedGammaLevel(monitor, level, intent) {
   // Cache tracks requested levels; pending or rejected submissions must be reapplied.
   const previousSubmission = gammaBrightnessSubmissions.get(monitor.id)
   if (monitor.gammaBrightness === gammaLevel
-    && (!previousSubmission || (previousSubmission.accepted && previousSubmission.level === gammaLevel))) return false
+    && ((!previousSubmission && !intent) || (previousSubmission?.accepted && previousSubmission.level === gammaLevel))) return false
 
   monitor.gammaBrightness = gammaLevel
   const submission = setGammaBrightnessThrottle(monitor.id, gammaLevel, intent)

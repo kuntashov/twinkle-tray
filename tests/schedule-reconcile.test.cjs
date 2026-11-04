@@ -13,6 +13,43 @@ test('partial inventory retries the current evening target without rewriting its
     assert.deepEqual(h.messages.map(m => [m.id, Math.round(m.brightness)]), [['A', 55], ['B', 45]])
 })
 
+for (const [target, raw, gamma] of [[70, 25, 100], [30, 0, 60]]) {
+    test(`an owned extended target confirms an absent gamma record once and later intervals complete without IPC (gamma ${gamma})`, async () => {
+        const h = harness()
+        h.c.monitors.B.excluded = true
+        Object.assign(h.c.monitors.A, { brightness: raw, brightnessRaw: raw, gammaBrightness: gamma })
+        h.c.settings.extendMinimumDisplays = { A: true }
+        h.c.settings.extendMinimumBreakpoints = { A: 60 }
+        h.c.settings.adjustmentTimes[2].monitors.A = target
+        h.c.settings.adjustmentTimes[3].monitors.A = target
+        assert.equal(h.c.setTrackedGammaLevel(h.c.monitors.A, gamma), false)
+        assert.deepEqual(h.messages, [])
+        h.c.applyCurrentAdjustmentEvent()
+        await h.settle()
+        await h.advance(200)
+        assert.deepEqual(h.messages.map(m => [m.type, Math.round(m.brightness)]), [['gamma', gamma], ['brightness', raw]])
+        assert.equal(h.run('gammaBrightnessSubmissions.get("A").accepted'), true)
+        assert.equal(h.run('acceptedScheduleDisplays.get("A")'), target)
+        assert.equal(h.run('brightnessRecoveryPromise'), false)
+        h.messages.length = 0
+        h.setTime(2026, 10, 4, 22, 1)
+        h.c.refreshMonitorsJob = async () => ({ monitors: {
+            A: { ...h.c.monitors.A, gammaBrightness: gamma, brightness: raw, brightnessRaw: raw },
+            B: { ...h.c.monitors.B }
+        } })
+        h.c.applyCurrentAdjustmentEvent()
+        await h.settle()
+        assert.deepEqual(h.messages, [])
+        assert.equal(h.run('acceptedScheduleDisplays.get("A")'), target)
+        assert.equal(h.run('brightnessRecoveryPromise'), false)
+        await h.advance(6000)
+        h.c.applyCurrentAdjustmentEvent()
+        await h.settle()
+        assert.deepEqual(h.messages, [])
+        assert.equal(h.run('brightnessRecoveryPromise'), false)
+    })
+}
+
 test('accepted gamma alone cannot complete or deduplicate a failed hardware floor', async () => {
     const h = harness()
     h.c.monitors.B.excluded = true
